@@ -6,6 +6,7 @@ import time
 from threading import Thread
 from flask import Flask
 import discord
+from discord.ui import Modal, TextInput
 from discord.ext import commands
 from dotenv import load_dotenv
 from e2b_code_interpreter import Sandbox
@@ -97,7 +98,7 @@ def get_code_audit(code: str, execution_time: float, output: str) -> str:
         f"Execution Time in Sandbox: {execution_time:.4f} seconds\n"
         f"Execution Output / Result:\n```\n{output}\n```\n\n"
         "Provide a concise performance audit containing:\n"
-        "1. **Big-O Complexity:** Estimated Time Complexity and Space Complexity.\n"
+        "1. **Big-O Complexity:** Estimated Time Complexity and Space Complexity (DO NOT use LaTeX or dollar signs like $O(1)$. Write plain text like O(1) or O(N)).\n"
         "2. **Bottlenecks / Insights:** 1-2 sentences on efficiency or potential performance pitfalls.\n"
         "3. **Optimization Tip:** A quick way to make it faster if applicable.\n"
         "Keep the response clean and under 1500 characters."
@@ -113,18 +114,115 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
 
-# --- 3. SLASH COMMAND: /profile (Performance Profiler & Runner) ---
-@bot.tree.command(name="profile", description="Execute code and analyze its execution time, output, and Big-O complexity")
+# --- CORE EXECUTION & PROFILING ENGINE (PRIVATE / EPHEMERAL) ---
+async def execute_and_profile_code(interaction: discord.Interaction, clean_code: str, sandbox_files: dict, input_data: str):
+    # Inject input stream handler if input() is used
+    if input_data or "input(" in clean_code:
+        clean_code = (
+            "import sys\nfrom io import StringIO\n"
+            f"_inputs = {repr(input_data)}.split()\n"
+            "_input_iter = iter(_inputs)\n"
+            "def custom_input(prompt=''):\n"
+            "    print(prompt, end='')\n"
+            "    try:\n"
+            "        return next(_input_iter)\n"
+            "    except StopIteration:\n"
+            "        return ''\n"
+            "__builtins__.input = custom_input\n\n"
+        ) + clean_code
+
+    msg = await interaction.followup.send(f"⏱️ Profiling code execution privately for **{interaction.user.name}**...", ephemeral=True)
+
+    def run_sandbox():
+        output_lines = []
+        start_time = time.time()
+        elapsed_time = 0.0
+        try:
+            with Sandbox.create() as sandbox:
+                for filename, content in sandbox_files.items():
+                    sandbox.files.write(filename, content)
+
+                t0 = time.time()
+                execution = sandbox.run_code(clean_code)
+                elapsed_time = time.time() - t0
+                
+                if execution.logs.stdout:
+                    output_lines.extend(execution.logs.stdout)
+                if execution.logs.stderr:
+                    output_lines.append("\n⚠️ Runtime Error:\n" + "\n".join(execution.logs.stderr))
+                if execution.error:
+                    tb_lines = "".join(execution.error.traceback) if execution.error.traceback else ""
+                    output_lines.append(f"\n⚠️ Runtime Error:\n{execution.error.name}: {execution.error.value}\n{tb_lines}")
+                
+                if not output_lines:
+                    output_lines.append("✅ Code executed successfully with no output.")
+        except Exception as e:
+            elapsed_time = time.time() - start_time
+            output_lines.append(f"❌ Sandbox Connection Error: {str(e)}")
+        
+        return "\n".join(output_lines), elapsed_time
+
+    result, exec_time = await asyncio.to_thread(run_sandbox)
+
+    if len(result) > 1500:
+        result = result[:1500] + "\n...(Output truncated)"
+
+    response_text = f"📊 **Execution Output ({exec_time:.4f}s):**\n```ansi\n{result}\n```"
+    await msg.edit(content=response_text)
+
+    # 🧠 Generate AI Complexity Audit Privately
+    audit_msg = await interaction.followup.send("🔍 **Xompiler AI is profiling Big-O complexity & performance privately...**", ephemeral=True)
+    try:
+        complexity_report = await asyncio.to_thread(get_code_audit, clean_code, exec_time, result)
+        if len(complexity_report) > 1900:
+            complexity_report = complexity_report[:1900] + "\n...(truncated)"
+        await audit_msg.edit(content=f"📈 **Performance & Complexity Audit:**\n{complexity_report}")
+    except Exception as e:
+        await audit_msg.edit(content=f"❌ Profiler AI Error: `{e}`")
+
+# --- INTERACTIVE MULTI-LINE CODEBOX MODAL ---
+class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
+    code_input = TextInput(
+        label="Python Source Code",
+        style=discord.TextStyle.paragraph,
+        placeholder="Type or paste your multi-line python code here...",
+        required=True,
+        max_length=2000
+    )
+    stdin_input = TextInput(
+        label="Stdin / Program Inputs (Optional)",
+        style=discord.TextStyle.short,
+        placeholder="e.g. yash 21 (separated by spaces)",
+        required=False,
+        max_length=200
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        code_text = self.code_input.value.strip()
+        
+        if code_text.startswith("```"):
+            lines = code_text.splitlines()
+            if len(lines) >= 2:
+                lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
+                code_text = "\n".join(lines)
+
+        await execute_and_profile_code(interaction, code_text, {}, self.stdin_input.value or "")
+
+# --- 3. SLASH COMMANDS (/profile & /codebox) ---
+@bot.tree.command(name="profile", description="Privately execute code and analyze Big-O complexity")
 @discord.app_commands.describe(
     code="Your Python source code to profile",
-    file="Optional source file to profile (.py or .txt)"
+    file="Optional source file (.py or .txt)",
+    stdin="Program inputs (e.g. yash 21)"
 )
 async def profile(
     interaction: discord.Interaction, 
     code: str = None, 
-    file: discord.Attachment = None
+    file: discord.Attachment = None,
+    stdin: str = None
 ):
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     
     try:
         clean_code = ""
@@ -139,7 +237,7 @@ async def profile(
                 else:
                     sandbox_files[file.filename] = file_content
             except Exception as e:
-                await interaction.followup.send(f"⚠️ Failed to read file `{file.filename}`: {e}")
+                await interaction.followup.send(f"⚠️ Failed to read file `{file.filename}`: {e}", ephemeral=True)
                 return
 
         if code:
@@ -152,67 +250,19 @@ async def profile(
             clean_code = code_text if not clean_code else clean_code + "\n" + code_text
 
         if not clean_code and not sandbox_files:
-            await interaction.followup.send("❌ Please provide some code or upload a file to profile!")
+            await interaction.followup.send("❌ Please provide some code or upload a file to profile!", ephemeral=True)
             return
 
-        msg = await interaction.followup.send(f"⏱️ Profiling code execution for **{interaction.user.name}**...")
-
-        def execute_and_measure():
-            output_lines = []
-            start_time = time.time()
-            elapsed_time = 0.0
-            try:
-                with Sandbox.create() as sandbox:
-                    for filename, content in sandbox_files.items():
-                        sandbox.files.write(filename, content)
-
-                    t0 = time.time()
-                    execution = sandbox.run_code(clean_code)
-                    elapsed_time = time.time() - t0
-                    
-                    if execution.logs.stdout:
-                        output_lines.extend(execution.logs.stdout)
-                    if execution.logs.stderr:
-                        output_lines.append("\n⚠️ Runtime Error:\n" + "\n".join(execution.logs.stderr))
-                    if execution.error:
-                        tb_lines = "".join(execution.error.traceback) if execution.error.traceback else ""
-                        output_lines.append(f"\n⚠️ Runtime Error:\n{execution.error.name}: {execution.error.value}\n{tb_lines}")
-                    
-                    if not output_lines:
-                        output_lines.append("✅ Code executed successfully with no output.")
-            except Exception as e:
-                elapsed_time = time.time() - start_time
-                output_lines.append(f"❌ Sandbox Connection Error: {str(e)}")
-            
-            return "\n".join(output_lines), elapsed_time
-
-        result, exec_time = await asyncio.to_thread(execute_and_measure)
-
-        if len(result) > 1500:
-            result = result[:1500] + "\n...(Output truncated)"
-
-        response_text = f"📊 **Execution Output ({exec_time:.4f}s):**\n```ansi\n{result}\n```"
-        await msg.edit(content=response_text)
-
-        # 🧠 Generate AI Complexity Audit
-        audit_msg = await interaction.followup.send("🔍 **Xompiler AI is profiling Big-O complexity & performance...**")
-        try:
-            complexity_report = await asyncio.to_thread(get_code_audit, clean_code, exec_time, result)
-            if len(complexity_report) > 1900:
-                complexity_report = complexity_report[:1900] + "\n...(truncated)"
-            await audit_msg.edit(content=f"📈 **Performance & Complexity Audit:**\n{complexity_report}")
-        except Exception as e:
-            await audit_msg.edit(content=f"❌ Profiler AI Error: `{e}`")
+        await execute_and_profile_code(interaction, clean_code, sandbox_files, stdin or "")
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Critical profiling error: `{str(e)}`")
+        await interaction.followup.send(f"❌ Critical profiling error: `{str(e)}`", ephemeral=True)
 
-# --- 4. STANDARD RUN & SNIPPET COMMANDS ---
-@bot.tree.command(name="run", description="Compile and execute programming code")
-@discord.app_commands.describe(code="Your source code", file="Optional attachment")
-async def run_slash(interaction: discord.Interaction, code: str = None, file: discord.Attachment = None):
-    await interaction.response.send_message("⚡ Use `/profile` to run code with performance metrics and Big-O analysis!", ephemeral=True)
+@bot.tree.command(name="codebox", description="Open a secure multi-line code editor popup window")
+async def codebox(interaction: discord.Interaction):
+    await interaction.response.send_modal(CodeBoxModal())
 
+# --- 4. STANDARD PREFIX COMMANDS ---
 @bot.command()
 async def ask(ctx, *, question: str = None):
     try:
