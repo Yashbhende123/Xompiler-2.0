@@ -18,7 +18,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
 
-# Mute noisy Flask ping logs in the console
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
@@ -27,7 +26,6 @@ def home():
     return "Xompiler AI Bot is Online and Healthy!", 200
 
 def run_web():
-    # Render automatically provides a PORT environment variable
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
@@ -56,7 +54,7 @@ def get_ai_fix(code: str, error: str) -> str:
         "Keep the total response under 1500 characters."
     )
     response = ai_client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",  # Updated model name
         contents=prompt
     )
     return response.text
@@ -68,15 +66,12 @@ def execute_code_in_sandbox(code_str: str):
         with Sandbox.create() as sandbox:
             execution = sandbox.run_code(code_str)
             
-            # Capture standard console output
             if execution.logs.stdout:
                 output_lines.append("\n".join(execution.logs.stdout))
                 
-            # Capture standard error logs if any
             if execution.logs.stderr:
                 output_lines.append("\n⚠️ Runtime Error:\n" + "\n".join(execution.logs.stderr))
                 
-            # Capture E2B Jupyter-style execution errors (like 1 / 0 or NameError)
             if execution.error:
                 tb_lines = "".join(execution.error.traceback) if execution.error.traceback else ""
                 output_lines.append(f"\n⚠️ Runtime Error:\n{execution.error.name}: {execution.error.value}\n{tb_lines}")
@@ -99,7 +94,6 @@ async def run(ctx, *, code_block: str = None):
         await ctx.send("❌ Please provide some code to run! Example: `!run print('Hello')`")
         return
 
-    # Clean markdown code blocks if present
     clean_code = code_block.strip()
     if clean_code.startswith("```"):
         lines = clean_code.splitlines()
@@ -109,7 +103,6 @@ async def run(ctx, *, code_block: str = None):
 
     msg = await ctx.send(f"⏳ Running code for **{ctx.author.name}**...")
 
-    # Offload E2B sandbox execution to background thread
     result = await asyncio.to_thread(execute_code_in_sandbox, clean_code)
 
     if len(result) > 1900:
@@ -118,7 +111,6 @@ async def run(ctx, *, code_block: str = None):
     response_text = f"Output for **{ctx.author.name}**:\n```ansi\n{result}\n```"
     await msg.edit(content=response_text)
 
-    # 🤖 AI Auto-Fix Trigger: If output contains a runtime error, call Gemini!
     if "⚠️ Runtime Error:" in result:
         ai_msg = await ctx.send("🤖 **Xompiler AI is analyzing the crash...**")
         try:
@@ -139,7 +131,7 @@ async def ask(ctx, *, question: str = None):
     try:
         res = await asyncio.to_thread(
             lambda: ai_client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",  # Updated model name
                 contents=f"Answer concisely with code examples if needed:\n{question}"
             ).text
         )
