@@ -189,7 +189,6 @@ class XompilerToolbarView(View):
 
             ai_response = await asyncio.to_thread(lambda: ask_gemini(prompt))
             
-            # Extract code block from AI response
             fixed_code = ai_response
             if "```python" in ai_response:
                 parts = ai_response.split("```python")
@@ -242,7 +241,6 @@ class XompilerToolbarView(View):
 
 # --- CORE EXECUTION & MATPLOTLIB CAPTURE ENGINE ---
 async def execute_and_render_code(interaction: discord.Interaction, raw_code: str, sandbox_files: dict, input_data: str, existing_msg: discord.WebhookMessage = None):
-    # 1. Pre-Flight AST Security Scan
     security_error = security_scan(raw_code)
     if security_error:
         if existing_msg:
@@ -251,7 +249,6 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
             await interaction.followup.send(security_error, ephemeral=True)
         return
 
-    # 2. Parse Multi-File Projects
     main_code, parsed_files = parse_multi_file_code(raw_code)
     sandbox_files.update(parsed_files)
 
@@ -378,7 +375,20 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
 
         await execute_and_render_code(interaction, code_text, {}, self.stdin_input.value or "", existing_msg=msg)
 
-# --- 3. SLASH COMMANDS (/profile & /codebox) ---
+# --- 3. SLASH COMMANDS (/run, /profile, /codebox) ---
+@bot.tree.command(name="run", description="Execute code quickly")
+@discord.app_commands.describe(code="Your Python code to execute")
+async def run_slash(interaction: discord.Interaction, code: str):
+    await interaction.response.send_message("⏱️ Initializing secure sandbox and executing...", ephemeral=True)
+    msg = await interaction.original_response()
+    code_text = code.strip()
+    if code_text.startswith("```"):
+        lines = code_text.splitlines()
+        if len(lines) >= 2:
+            lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
+            code_text = "\n".join(lines)
+    await execute_and_render_code(interaction, code_text, {}, "", existing_msg=msg)
+
 @bot.tree.command(name="profile", description="Privately execute code with multi-file and AST guardrails")
 @discord.app_commands.describe(
     code="Your Python source code",
@@ -433,10 +443,6 @@ async def codebox(interaction: discord.Interaction):
 
 # --- 4. STANDARD PREFIX COMMANDS ---
 @bot.command()
-async def run(ctx, *, code: str = None):
-    await ctx.send("⚡ Please use `/profile` or `/codebox` for secure private execution and interactive action toolbars!")
-
-@bot.command()
 async def ask(ctx, *, question: str = None):
     try:
         if not question:
@@ -451,7 +457,7 @@ async def ask(ctx, *, question: str = None):
 @bot.command()
 async def save(ctx, name: str = None, *, code_block: str = None):
     if not name or not code_block:
-        await ctx.save("❌ Usage: `!save <name> <code>`")
+        await ctx.send("❌ Usage: `!save <name> <code>`")
         return
     snippets = load_snippets()
     snippets[name] = {"code": code_block.strip(), "author": str(ctx.author)}
