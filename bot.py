@@ -127,13 +127,6 @@ def security_scan(code: str):
 
 # --- MULTI-FILE PROJECT PARSER ---
 def parse_multi_file_code(raw_code: str):
-    """
-    Parses code blocks containing multiple files designated by headers like:
-    # file: utils.py
-    ...code...
-    # file: main.py
-    ...code...
-    """
     files = {}
     current_file = "main.py"
     current_lines = []
@@ -151,7 +144,6 @@ def parse_multi_file_code(raw_code: str):
     if current_lines or not files:
         files[current_file] = "\n".join(current_lines).strip()
 
-    # Default main script to run
     main_code = files.get("main.py", list(files.values())[0] if files else raw_code)
     sandbox_files = {fname: content for fname, content in files.items() if fname != "main.py"}
     
@@ -185,8 +177,8 @@ class XompilerToolbarView(View):
     @discord.ui.button(label="🔄 Re-run", style=discord.ButtonStyle.primary, row=0)
     async def rerun_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True)
-        await execute_and_render_code(interaction, self.clean_code, {}, "")
+        msg = await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True)
+        await execute_and_render_code(interaction, self.clean_code, {}, "", msg)
 
     @discord.ui.button(label="🧹 Format Code", style=discord.ButtonStyle.secondary, row=0)
     async def format_button(self, interaction: discord.Interaction, button: Button):
@@ -200,11 +192,14 @@ class XompilerToolbarView(View):
             await interaction.response.send_message(f"❌ Formatting error: {e}", ephemeral=True)
 
 # --- CORE EXECUTION & MATPLOTLIB CAPTURE ENGINE ---
-async def execute_and_render_code(interaction: discord.Interaction, raw_code: str, sandbox_files: dict, input_data: str):
+async def execute_and_render_code(interaction: discord.Interaction, raw_code: str, sandbox_files: dict, input_data: str, existing_msg: discord.WebhookMessage = None):
     # 1. Pre-Flight AST Security Scan
     security_error = security_scan(raw_code)
     if security_error:
-        await interaction.followup.send(security_error, ephemeral=True)
+        if existing_msg:
+            await existing_msg.edit(content=security_error)
+        else:
+            await interaction.followup.send(security_error, ephemeral=True)
         return
 
     # 2. Parse Multi-File Projects
@@ -246,7 +241,10 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
         "    pass\n"
     )
 
-    msg = await interaction.followup.send(f"⏱️ Executing code privately for **{interaction.user.name}**...", ephemeral=True)
+    if existing_msg:
+        msg = existing_msg
+    else:
+        msg = await interaction.followup.send(f"⏱️ Executing code privately for **{interaction.user.name}**...", ephemeral=True)
 
     def run_sandbox():
         output_lines = []
@@ -305,7 +303,7 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     code_input = TextInput(
         label="Python Code (Supports Multi-File `# file: name.py`)",
         style=discord.TextStyle.paragraph,
-        placeholder="# file: utils.py\ndef greet(name): return f'Hello {name}'\n\n# file: main.py\nfrom utils import greet\nprint(greet('Yash'))",
+        placeholder="print('Hello, Xompiler!')",
         required=True,
         max_length=2000
     )
@@ -383,6 +381,10 @@ async def codebox(interaction: discord.Interaction):
     await interaction.response.send_modal(CodeBoxModal())
 
 # --- 4. STANDARD PREFIX COMMANDS ---
+@bot.command()
+async def run(ctx, *, code: str = None):
+    await ctx.send("⚡ Please use `/profile` or `/codebox` for secure private execution and interactive action toolbars!")
+
 @bot.command()
 async def ask(ctx, *, question: str = None):
     try:
