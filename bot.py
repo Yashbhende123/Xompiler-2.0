@@ -1,12 +1,3 @@
-Let's build **Option 2: The Automated Complexity & Performance Profiler (`/profile`)**!
-
-When users run or benchmark their code through Xompiler, it won't just output the result—it will automatically calculate the exact execution time and use Gemini to provide a **Big-O Complexity Audit** (Time & Space analysis), flagging inefficiencies or performance bottlenecks right inside the Discord response.
-
-Here is how we integrate `/profile` into **`bot.py`**:
-
-### Updated `bot.py` with the Performance Profiler & Complexity Analyzer
-
-```python
 import os
 import asyncio
 import logging
@@ -216,7 +207,6 @@ async def profile(
 @bot.tree.command(name="run", description="Compile and execute programming code")
 @discord.app_commands.describe(code="Your source code", file="Optional attachment")
 async def run_slash(interaction: discord.Interaction, code: str = None, file: discord.Attachment = None):
-    # Standard quick execution fallback
     await interaction.response.send_message("⚡ Use `/profile` to run code with performance metrics and Big-O analysis!", ephemeral=True)
 
 @bot.command()
@@ -252,5 +242,3 @@ async def load(ctx, name: str = None):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
-```
