@@ -45,6 +45,9 @@ except Exception as e:
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Your specific Server Guild ID for instant slash command sync
+MY_GUILD_ID = discord.Object(id=1555987168470499370)
+
 # --- SNIPPET STORAGE UTILITIES ---
 SNIPPET_FILE = "snippets.json"
 
@@ -104,8 +107,9 @@ def get_code_audit(code: str, execution_time: float, output: str) -> str:
 @bot.event
 async def on_ready():
     try:
-        await bot.tree.sync()
-        print(f"✅ Logged in as {bot.user} & Slash Commands synced!")
+        bot.tree.copy_global_to(guild=MY_GUILD_ID)
+        await bot.tree.sync(guild=MY_GUILD_ID)
+        print(f"✅ Logged in as {bot.user} & Slash Commands synced instantly to your server!")
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
 
