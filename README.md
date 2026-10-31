@@ -1,70 +1,35 @@
-# ⚡ Xompiler 2.0 — 24/7 Cloud Code Execution Discord Bot
+# Xompiler-2.0 🚀
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
-![Discord.py](https://img.shields.io/badge/discord.py-2.0+-5865F2?logo=discord&logoColor=white)
-![E2B](https://img.shields.io/badge/Sandbox-E2B_Cloud-orange)
-![Render](https://img.shields.io/badge/Hosted_on-Render_24%2F7-46E3B7?logo=render&logoColor=black)
-
-**Xompiler** is a lightweight, high-performance Discord bot that compiles and executes code directly inside Discord channels. Instead of running untrusted code on a local machine, every `!run` command dynamically boots an isolated **E2B Cloud Sandbox** micro-VM in milliseconds.
+Xompiler-2.0 is an advanced, AI-powered Discord bot designed to execute Python code securely in the cloud via **E2B**, while featuring native **Gemini AI** integration for intelligent code assistance, automated crash debugging, and conversational developer support.
 
 ---
 
-## ✨ Features & Capabilities
-* **Isolated Cloud Execution:** Every command runs in a secure, disposable Ubuntu Linux micro-VM powered by the **E2B Code Interpreter SDK**.
-* **Non-Blocking Event Loop:** Heavy workloads are offloaded via `asyncio.to_thread()` so the Discord Gateway heartbeat never freezes or disconnects.
-* **24/7 Cloud Uptime:** Deployed on **Render** with an integrated background **Flask** keep-alive server monitored every 5 minutes by **UptimeRobot**.
-* **Multi-Language & Library Support:**
-  * **Languages:** Python 3, C/C++ (`gcc`/`g++`), SQL (`sqlite3`), Bash/Linux CLI, and Node.js.
-  * **Pre-Installed Libraries:** `numpy`, `pandas`, `scipy`, `scikit-learn`, `matplotlib`, `requests`, `beautifulsoup4`, `psutil`, and more.
+## 💡 Evolution & Architecture
+
+### Phase 1: Core Execution & Initial Setup
+Initially, Xompiler was built purely as a code execution tool. Users could run Python snippets in isolated cloud sandboxes using E2B, ensuring safety and isolation. However, runtime errors and tracebacks were handled strictly at the terminal or standard output level without intelligent remediation — if code crashed, the user received a raw error trace and had to debug manually.
+
+### Phase 2: Native Gemini AI Integration
+To elevate Xompiler into a true AI-native coding companion, we integrated the Google GenAI SDK (`google-genai`). The bot now features:
+- **Automated Crash Analysis & Auto-Fix:** Whenever a user's code snippet throws a runtime error or Jupyter-style notebook traceback (`execution.error`), Xompiler AI automatically intercepts the error, analyzes the traceback via Gemini, and posts an instant explanation along with corrected code.
+- **Interactive `!ask` Queries:** Users can query Gemini directly within Discord for programming concepts, syntax help, and architectural advice using the `!ask` command.
+- **Robust Model Fallback Mechanism:** Built-in fault-tolerance that automatically routes requests through active flash model endpoints to ensure 99.9% uptime and prevent traffic spike disruptions.
+- **24/7 Render Hosting:** Maintained continuously online using a lightweight Flask keep-alive web server integrated with GitHub webhooks.
 
 ---
 
-## 🚀 Usage in Discord
+## 🛠️ Tech Stack
 
-Run a quick one-liner:
-```text
-!run print("Hello from Xompiler 2.0 Cloud!")
-```
-
-Or run full multi-line code blocks with Discord syntax highlighting:
-```text
-!run ```python
-import numpy as np
-import pandas as pd
-
-matrix = np.random.rand(500, 500)
-print("Matrix Mean:", round(float(np.mean(matrix)), 4))
-```
-```
+* **Language:** Python 3.10+
+* **Discord Framework:** `discord.py`
+* **AI Engine:** Google GenAI SDK (`google-genai`) using Gemini models with automated fallback routing
+* **Execution Environment:** `e2b-code-interpreter` (`Sandbox.create()`)
+* **Hosting / Infrastructure:** Render (24/7 deployment via GitHub webhooks with a Flask keep-alive server)
+* **Configuration:** `python-dotenv`
 
 ---
 
-## ☁️ How We Built & Deployed It (Architecture)
-1. **Core Bot & E2B Integration:** Built with `discord.py` and `e2b-code-interpreter` for isolated cloud execution.
-2. **Async Threading Fix:** Wrapped E2B sandbox execution in `asyncio.to_thread()` to prevent blocking the main Discord event loop.
-3. **Keep-Alive Web Server:** Added a lightweight `Flask` server running on a daemon thread (`keep_alive()`) to expose a `200 OK` health-check endpoint.
-4. **Secure Cloud Deployment:** Hosted on **Render** connected directly to this GitHub repository, with sensitive keys (`DISCORD_TOKEN` and `E2B_API_KEY`) stored strictly inside encrypted Environment Variables.
-5. **Zero-Downtime Monitoring:** Configured an **UptimeRobot** HTTP monitor to ping the Render endpoint every 5 minutes, bypassing the 15-minute free-tier idle spin-down.
+## ⚙️ Commands
 
----
-
-## 🛠️ Local Setup (Optional)
-
-1. Clone this repository:
-   ```bash
-   git clone [https://github.com/Yashbhende123/Xompiler.git](https://github.com/Yashbhende123/Xompiler.git)
-   cd Xompiler
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Create a `.env` file in the root folder and add your keys:
-   ```env
-   DISCORD_TOKEN=your_discord_bot_token_here
-   E2B_API_KEY=your_e2b_api_key_here
-   ```
-4. Start the bot:
-   ```bash
-   python bot.py
-   ```
+* `!run <code>`: Executes Python code inside an isolated E2B cloud sandbox. If an error occurs, Gemini automatically analyzes the traceback and provides a corrective fix.
+* `!ask <question>`: Directly queries Gemini AI for code explanations, debugging help, or general programming knowledge.
