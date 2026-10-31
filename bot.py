@@ -1,5 +1,6 @@
 import os
 import asyncio
+import logging
 from threading import Thread
 from flask import Flask
 import discord
@@ -8,36 +9,40 @@ from dotenv import load_dotenv
 from e2b_code_interpreter import Sandbox
 from google import genai
 
+# Load local .env if present (Render will use its own Environment Variables)
 load_dotenv()
-
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- 1. Flask Keep-Alive Server (For 24/7 Render + UptimeRobot) ---
+# --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
 
-@app.route('/')
+# Mute noisy Flask ping logs in the console
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+@app.route('/', methods=['GET', 'HEAD'])
 def home():
-    return "Xompiler 2.0 AI Edition is live 24/7!"
+    return "Xompiler AI Bot is Online and Healthy!", 200
 
 def run_web():
+    # Render automatically provides a PORT environment variable
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 def keep_alive():
-    t = Thread(target=run_web)
-    t.daemon = True
+    t = Thread(target=run_web, daemon=True)
     t.start()
 
-# --- 2. Initialize Clients ---
+# --- 2. INITIALIZE CLIENTS ---
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 3. Gemini AI Bug Explainer ---
+# --- 3. GEMINI AI BUG EXPLAINER ---
 def get_ai_fix(code: str, error: str) -> str:
     prompt = (
         "You are Xompiler AI, an expert coding assistant.\n"
@@ -56,11 +61,12 @@ def get_ai_fix(code: str, error: str) -> str:
     )
     return response.text
 
-# --- 4. E2B Sandbox Execution Logic ---
+# --- 4. E2B SANDBOX EXECUTION LOGIC ---
 def execute_code_in_sandbox(code_str: str):
     output_lines = []
     try:
-        with Sandbox() as sandbox:
+        # Fixed to use Sandbox.create() for the updated E2B SDK
+        with Sandbox.create() as sandbox:
             execution = sandbox.run_code(code_str)
             if execution.logs.stdout:
                 output_lines.append("\n".join(execution.logs.stdout))
@@ -77,7 +83,7 @@ def execute_code_in_sandbox(code_str: str):
 async def on_ready():
     print(f"✅ Logged in as {bot.user} (Xompiler AI Edition)")
 
-# --- 5. Bot Commands ---
+# --- 5. DISCORD COMMANDS ---
 @bot.command()
 async def run(ctx, *, code_block: str = None):
     if not code_block:
@@ -94,7 +100,7 @@ async def run(ctx, *, code_block: str = None):
 
     msg = await ctx.send(f"⏳ Running code for **{ctx.author.name}**...")
 
-    # Offload E2B sandbox to background thread
+    # Offload E2B sandbox execution to background thread
     result = await asyncio.to_thread(execute_code_in_sandbox, clean_code)
 
     if len(result) > 1900:
