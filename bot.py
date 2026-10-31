@@ -4,6 +4,8 @@ import logging
 import json
 import time
 import io
+import textwrap
+import ast
 from threading import Thread
 from flask import Flask
 import discord
@@ -100,30 +102,115 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
 
-# --- SHARE VIEW (BUTTON TO MAKE OUTPUT PUBLIC) ---
-class ShareView(View):
-    def __init__(self, response_text: str, plot_bytes: bytes = None, author_name: str = "User"):
-        super().__init__(timeout=180)
+# --- PRE-FLIGHT AST SECURITY GUARDRAIL ---
+def security_scan(code: str):
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None # Let standard execution catch syntax errors
+
+    forbidden_modules = {'subprocess', 'ctypes', 'multiprocessing'}
+    forbidden_funcs = {'eval', 'exec'}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in forbidden_modules:
+                    return f"🔒 **Security Guardrail Violation:** Importing restricted module `{alias.name}` is blocked for safety."
+        elif isinstance(node, ast.ImportFrom):
+            if node.module in forbidden_modules:
+                return f"🔒 **Security Guardrail Violation:** Importing from restricted module `{node.module}` is blocked."
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in forbidden_funcs:
+                return f"🔒 **Security Guardrail Violation:** Use of built-in function `{node.func.id}()` is restricted."
+    return None
+
+# --- MULTI-FILE PROJECT PARSER ---
+def parse_multi_file_code(raw_code: str):
+    """
+    Parses code blocks containing multiple files designated by headers like:
+    # file: utils.py
+    ...code...
+    # file: main.py
+    ...code...
+    """
+    files = {}
+    current_file = "main.py"
+    current_lines = []
+
+    for line in raw_code.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# file:") or stripped.startswith("# filename:"):
+            if current_lines:
+                files[current_file] = "\n".join(current_lines).strip()
+                current_lines = []
+            current_file = stripped.split(":", 1)[1].strip()
+        else:
+            current_lines.append(line)
+    
+    if current_lines or not files:
+        files[current_file] = "\n".join(current_lines).strip()
+
+    # Default main script to run
+    main_code = files.get("main.py", list(files.values())[0] if files else raw_code)
+    sandbox_files = {fname: content for fname, content in files.items() if fname != "main.py"}
+    
+    return main_code, sandbox_files
+
+# --- INTERACTIVE TOOLBAR VIEW ---
+class XompilerToolbarView(View):
+    def __init__(self, response_text: str, plot_bytes: bytes = None, clean_code: str = "", author_name: str = "User"):
+        super().__init__(timeout=300)
         self.response_text = response_text
         self.plot_bytes = plot_bytes
+        self.clean_code = clean_code
         self.author_name = author_name
 
-    @discord.ui.button(label="🌍 Share Publicly", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="🌍 Share Publicly", style=discord.ButtonStyle.green, row=0)
     async def share_button(self, interaction: discord.Interaction, button: Button):
         button.disabled = True
-        button.label = "Shared Publicly ✅"
         await interaction.response.edit_message(view=self)
 
-        # Send public message to the channel
         if self.plot_bytes:
             file_obj = discord.File(io.BytesIO(self.plot_bytes), filename="xompiler_plot.png")
             await interaction.channel.send(f"🔓 **Shared output by {self.author_name}:**\n{self.response_text}", file=file_obj)
         else:
             await interaction.channel.send(f"🔓 **Shared output by {self.author_name}:**\n{self.response_text}")
 
+    @discord.ui.button(label="📥 Download File", style=discord.ButtonStyle.secondary, row=0)
+    async def download_button(self, interaction: discord.Interaction, button: Button):
+        code_file = discord.File(io.BytesIO(self.clean_code.encode('utf-8')), filename="script.py")
+        await interaction.response.send_message("📥 Here is your downloadable script file:", file=code_file, ephemeral=True)
+
+    @discord.ui.button(label="🔄 Re-run", style=discord.ButtonStyle.primary, row=0)
+    async def rerun_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True)
+        await execute_and_render_code(interaction, self.clean_code, {}, "")
+
+    @discord.ui.button(label="🧹 Format Code", style=discord.ButtonStyle.secondary, row=0)
+    async def format_button(self, interaction: discord.Interaction, button: Button):
+        try:
+            formatted = textwrap.dedent(self.clean_code).strip()
+            formatted_box = f"🧹 **Formatted Clean Code:**\n```python\n{formatted}\n```"
+            if len(formatted_box) > 1950:
+                formatted_box = formatted_box[:1950] + "\n...(truncated)"
+            await interaction.response.send_message(formatted_box, ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Formatting error: {e}", ephemeral=True)
+
 # --- CORE EXECUTION & MATPLOTLIB CAPTURE ENGINE ---
-async def execute_and_render_code(interaction: discord.Interaction, clean_code: str, sandbox_files: dict, input_data: str):
-    # Inject matplotlib headless backend
+async def execute_and_render_code(interaction: discord.Interaction, raw_code: str, sandbox_files: dict, input_data: str):
+    # 1. Pre-Flight AST Security Scan
+    security_error = security_scan(raw_code)
+    if security_error:
+        await interaction.followup.send(security_error, ephemeral=True)
+        return
+
+    # 2. Parse Multi-File Projects
+    main_code, parsed_files = parse_multi_file_code(raw_code)
+    sandbox_files.update(parsed_files)
+
     matplotlib_wrapper = (
         "import sys\n"
         "try:\n"
@@ -134,9 +221,8 @@ async def execute_and_render_code(interaction: discord.Interaction, clean_code: 
         "    pass\n\n"
     )
 
-    # Inject input stream handler if input() is used
-    if input_data or "input(" in clean_code:
-        clean_code = (
+    if input_data or "input(" in main_code:
+        main_code = (
             "from io import StringIO\n"
             f"_inputs = {repr(input_data)}.split()\n"
             "_input_iter = iter(_inputs)\n"
@@ -147,9 +233,9 @@ async def execute_and_render_code(interaction: discord.Interaction, clean_code: 
             "    except StopIteration:\n"
             "        return ''\n"
             "__builtins__.input = custom_input\n\n"
-        ) + clean_code
+        ) + main_code
 
-    full_code = matplotlib_wrapper + clean_code + (
+    full_code = matplotlib_wrapper + main_code + (
         "\n\n# Xompiler Matplotlib Auto-Capture\n"
         "try:\n"
         "    import matplotlib.pyplot as plt\n"
@@ -187,7 +273,6 @@ async def execute_and_render_code(interaction: discord.Interaction, clean_code: 
                 if not output_lines:
                     output_lines.append("✅ Code executed successfully with no output.")
 
-                # Check if a matplotlib graph was generated and saved
                 try:
                     if sandbox.files.exists("xompiler_plot.png"):
                         plot_bytes = sandbox.files.read("xompiler_plot.png", format="bytes")
@@ -207,21 +292,20 @@ async def execute_and_render_code(interaction: discord.Interaction, clean_code: 
 
     response_text = f"📊 **Execution Output ({exec_time:.4f}s):**\n```ansi\n{result}\n```"
     
-    share_view = ShareView(response_text, plot_data, interaction.user.name)
+    toolbar_view = XompilerToolbarView(response_text, plot_data, main_code, interaction.user.name)
 
-    # Send output with graph attachment if available (Entirely Private / Ephemeral)
     if plot_data:
         file_obj = discord.File(io.BytesIO(plot_data), filename="xompiler_plot.png")
-        await msg.edit(content=response_text, attachments=[file_obj], view=share_view)
+        await msg.edit(content=response_text, attachments=[file_obj], view=toolbar_view)
     else:
-        await msg.edit(content=response_text, view=share_view)
+        await msg.edit(content=response_text, view=toolbar_view)
 
 # --- INTERACTIVE MULTI-LINE CODEBOX MODAL ---
 class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     code_input = TextInput(
-        label="Python Source Code (Matplotlib supported)",
+        label="Python Code (Supports Multi-File `# file: name.py`)",
         style=discord.TextStyle.paragraph,
-        placeholder="print('Hello, Xompiler!')",
+        placeholder="# file: utils.py\ndef greet(name): return f'Hello {name}'\n\n# file: main.py\nfrom utils import greet\nprint(greet('Yash'))",
         required=True,
         max_length=2000
     )
@@ -246,7 +330,7 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
         await execute_and_render_code(interaction, code_text, {}, self.stdin_input.value or "")
 
 # --- 3. SLASH COMMANDS (/profile & /codebox) ---
-@bot.tree.command(name="profile", description="Privately execute code and render optional plots")
+@bot.tree.command(name="profile", description="Privately execute code with multi-file and AST guardrails")
 @discord.app_commands.describe(
     code="Your Python source code",
     file="Optional source file (.py or .txt)",
