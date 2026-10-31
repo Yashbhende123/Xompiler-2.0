@@ -113,7 +113,6 @@ async def run(ctx, *, code_block: str = None):
                 if attachment.filename.endswith('.py') and not code_block:
                     clean_code = file_content
                 else:
-                    # Save data/text files to be loaded into sandbox filesystem
                     sandbox_files[attachment.filename] = file_content
             except Exception as e:
                 await ctx.send(f"⚠️ Failed to read attachment `{attachment.filename}`: {e}")
@@ -143,7 +142,18 @@ async def run(ctx, *, code_block: str = None):
         try:
             user_msg = await bot.wait_for('message', timeout=60.0, check=check)
             user_input_value = user_msg.content
-            clean_code = f"import sys\nfrom io import StringIO\nsys.stdin = StringIO({repr(user_input_value)})\n\n" + clean_code
+            
+            # Override built-in input to pipe user's response safely into the sandbox
+            clean_code = (
+                "import sys\nfrom io import StringIO\n"
+                f"_input_stream = StringIO({repr(user_input_value)} + '\\n')\n"
+                "def custom_input(prompt=''):\n"
+                "    print(prompt, end='')\n"
+                "    line = _input_stream.readline()\n"
+                "    if not line: return ''\n"
+                "    return line.strip()\n"
+                "__builtins__.input = custom_input\n\n"
+            ) + clean_code
         except asyncio.TimeoutError:
             await ctx.send("⏳ Input prompt timed out. Running without input...")
 
@@ -154,116 +164,4 @@ async def run(ctx, *, code_block: str = None):
         output_lines = []
         try:
             with Sandbox.create() as sandbox:
-                # Write any attached files into the sandbox directory
-                for filename, content in sandbox_files.items():
-                    sandbox.files.write(filename, content)
-
-                execution = sandbox.run_code(clean_code)
-                
-                if execution.logs.stdout:
-                    output_lines.extend(execution.logs.stdout)
-                if execution.logs.stderr:
-                    output_lines.append("\n⚠️ Runtime Error:\n" + "\n".join(execution.logs.stderr))
-                if execution.error:
-                    tb_lines = "".join(execution.error.traceback) if execution.error.traceback else ""
-                    output_lines.append(f"\n⚠️ Runtime Error:\n{execution.error.name}: {execution.error.value}\n{tb_lines}")
-                
-                if not output_lines:
-                    output_lines.append("✅ Code executed successfully with no output.")
-        except Exception as e:
-            output_lines.append(f"❌ Sandbox Connection Error: {str(e)}")
-        
-        return "\n".join(output_lines)
-
-    result = await asyncio.to_thread(execute_in_sandbox)
-
-    if len(result) > 1900:
-        result = result[:1900] + "\n...(Output truncated)"
-
-    response_text = f"Output for **{ctx.author.name}**:\n```ansi\n{result}\n```"
-    await msg.edit(content=response_text)
-
-    # 🤖 AI Auto-Fix Trigger on Crash
-    if "⚠️ Runtime Error:" in result:
-        ai_msg = await ctx.send("🤖 **Xompiler AI is analyzing the crash...**")
-        try:
-            ai_suggestion = await asyncio.to_thread(get_ai_fix, clean_code, result)
-            if len(ai_suggestion) > 1900:
-                ai_suggestion = ai_suggestion[:1900] + "\n...(truncated)"
-            await ai_msg.edit(content=f"💡 **AI Debug Suggestion:**\n{ai_suggestion}")
-        except Exception as e:
-            await ai_msg.edit(content=f"❌ AI Error: `{e}`")
-
-@bot.command()
-async def ask(ctx, *, question: str = None):
-    if not question:
-        await ctx.send("❌ Please ask a question! Example: `!ask What is a Python decorator?`")
-        return
-        
-    msg = await ctx.send("🧠 **Thinking...**")
-    try:
-        res = await asyncio.to_thread(
-            lambda: ask_gemini(f"Answer concisely with code examples if needed:\n{question}")
-        )
-        if len(res) > 1950:
-            res = res[:1950] + "\n...(truncated)"
-        await msg.edit(content=f"🧠 **Answer for {ctx.author.name}:**\n{res}")
-    except Exception as e:
-        await msg.edit(content=f"❌ AI Error: `{e}`")
-
-# --- 5. SNIPPET MANAGEMENT COMMANDS ---
-@bot.command()
-async def save(ctx, name: str = None, *, code_block: str = None):
-    if not name or not code_block:
-        await ctx.send("❌ Usage: `!save <name> <code>`")
-        return
-
-    clean_code = code_block.strip()
-    if clean_code.startswith("```"):
-        lines = clean_code.splitlines()
-        if len(lines) >= 2:
-            lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
-            clean_code = "\n".join(lines)
-
-    snippets = load_snippets()
-    snippets[name] = {
-        "code": clean_code,
-        "author": str(ctx.author)
-    }
-    save_snippets_to_disk(snippets)
-    await ctx.send(f"💾 Successfully saved snippet as **`{name}`**!")
-
-@bot.command()
-async def load(ctx, name: str = None):
-    if not name:
-        await ctx.send("❌ Usage: `!load <name>`")
-        return
-
-    snippets = load_snippets()
-    if name not in snippets:
-        await ctx.send(f"❌ Snippet **`{name}`** not found!")
-        return
-
-    data = snippets[name]
-    output = f"📁 **Snippet: `{name}`** (Saved by {data['author']}):\n```python\n{data['code']}\n```"
-    if len(output) > 2000:
-        output = output[:1950] + "\n...(truncated)\n```"
-    await ctx.send(output)
-
-@bot.command()
-async def share(ctx, name: str = None):
-    if not name:
-        await ctx.send("❌ Usage: `!share <name>`")
-        return
-
-    snippets = load_snippets()
-    if name not in snippets:
-        await ctx.send(f"❌ Snippet **`{name}`** not found to share!")
-        return
-
-    data = snippets[name]
-    await ctx.send(f"🔗 **{ctx.author.name} shared snippet `{name}`:**\n```python\n{data['code']}\n```")
-
-if __name__ == "__main__":
-    keep_alive()
-    bot.run(DISCORD_TOKEN)
+                for filename
