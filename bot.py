@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import time
+import io
 from threading import Thread
 from flask import Flask
 import discord
@@ -114,12 +115,23 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
 
-# --- CORE EXECUTION & PROFILING ENGINE (PRIVATE / EPHEMERAL) ---
+# --- CORE EXECUTION & MATPLOTLIB CAPTURE ENGINE (PRIVATE / EPHEMERAL) ---
 async def execute_and_profile_code(interaction: discord.Interaction, clean_code: str, sandbox_files: dict, input_data: str):
+    # 1. Automatically inject matplotlib headless backend and auto-saver wrapper
+    matplotlib_wrapper = (
+        "import sys\n"
+        "try:\n"
+        "    import matplotlib\n"
+        "    matplotlib.use('Agg')\n"
+        "    import matplotlib.pyplot as plt\n"
+        "except ImportError:\n"
+        "    pass\n\n"
+    )
+
     # Inject input stream handler if input() is used
     if input_data or "input(" in clean_code:
         clean_code = (
-            "import sys\nfrom io import StringIO\n"
+            "from io import StringIO\n"
             f"_inputs = {repr(input_data)}.split()\n"
             "_input_iter = iter(_inputs)\n"
             "def custom_input(prompt=''):\n"
@@ -131,10 +143,22 @@ async def execute_and_profile_code(interaction: discord.Interaction, clean_code:
             "__builtins__.input = custom_input\n\n"
         ) + clean_code
 
-    msg = await interaction.followup.send(f"⏱️ Profiling code execution privately for **{interaction.user.name}**...", ephemeral=True)
+    full_code = matplotlib_wrapper + clean_code + (
+        "\n\n# Xompiler Matplotlib Auto-Capture\n"
+        "try:\n"
+        "    import matplotlib.pyplot as plt\n"
+        "    if plt.get_fignums():\n"
+        "        plt.savefig('xompiler_plot.png', bbox_inches='tight', dpi=150)\n"
+        "        plt.close('all')\n"
+        "except Exception:\n"
+        "    pass\n"
+    )
+
+    msg = await interaction.followup.send(f"⏱️ Profiling code execution and rendering graphs privately for **{interaction.user.name}**...", ephemeral=True)
 
     def run_sandbox():
         output_lines = []
+        plot_bytes = None
         start_time = time.time()
         elapsed_time = 0.0
         try:
@@ -143,7 +167,7 @@ async def execute_and_profile_code(interaction: discord.Interaction, clean_code:
                     sandbox.files.write(filename, content)
 
                 t0 = time.time()
-                execution = sandbox.run_code(clean_code)
+                execution = sandbox.run_code(full_code)
                 elapsed_time = time.time() - t0
                 
                 if execution.logs.stdout:
@@ -156,19 +180,33 @@ async def execute_and_profile_code(interaction: discord.Interaction, clean_code:
                 
                 if not output_lines:
                     output_lines.append("✅ Code executed successfully with no output.")
+
+                # Check if a matplotlib graph was generated and saved
+                try:
+                    if sandbox.files.exists("xompiler_plot.png"):
+                        plot_bytes = sandbox.files.read("xompiler_plot.png", format="bytes")
+                except Exception:
+                    pass
+
         except Exception as e:
             elapsed_time = time.time() - start_time
             output_lines.append(f"❌ Sandbox Connection Error: {str(e)}")
         
-        return "\n".join(output_lines), elapsed_time
+        return "\n".join(output_lines), elapsed_time, plot_bytes
 
-    result, exec_time = await asyncio.to_thread(run_sandbox)
+    result, exec_time, plot_data = await asyncio.to_thread(run_sandbox)
 
     if len(result) > 1500:
         result = result[:1500] + "\n...(Output truncated)"
 
     response_text = f"📊 **Execution Output ({exec_time:.4f}s):**\n```ansi\n{result}\n```"
-    await msg.edit(content=response_text)
+    
+    # Send output with graph attachment if available
+    if plot_data:
+        file_obj = discord.File(io.BytesIO(plot_data), filename="xompiler_plot.png")
+        await msg.edit(content=response_text, attachments=[file_obj])
+    else:
+        await msg.edit(content=response_text)
 
     # 🧠 Generate AI Complexity Audit Privately
     audit_msg = await interaction.followup.send("🔍 **Xompiler AI is profiling Big-O complexity & performance privately...**", ephemeral=True)
@@ -183,9 +221,9 @@ async def execute_and_profile_code(interaction: discord.Interaction, clean_code:
 # --- INTERACTIVE MULTI-LINE CODEBOX MODAL ---
 class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     code_input = TextInput(
-        label="Python Source Code",
+        label="Python Source Code (Matplotlib supported)",
         style=discord.TextStyle.paragraph,
-        placeholder="Type or paste your multi-line python code here...",
+        placeholder="import matplotlib.pyplot as plt\nplt.plot([1,2,3], [4,5,6])\nplt.show()",
         required=True,
         max_length=2000
     )
@@ -210,7 +248,7 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
         await execute_and_profile_code(interaction, code_text, {}, self.stdin_input.value or "")
 
 # --- 3. SLASH COMMANDS (/profile & /codebox) ---
-@bot.tree.command(name="profile", description="Privately execute code and analyze Big-O complexity")
+@bot.tree.command(name="profile", description="Privately execute code (with Matplotlib support) and analyze Big-O")
 @discord.app_commands.describe(
     code="Your Python source code to profile",
     file="Optional source file (.py or .txt)",
