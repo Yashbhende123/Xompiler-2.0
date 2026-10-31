@@ -65,13 +65,22 @@ def get_ai_fix(code: str, error: str) -> str:
 def execute_code_in_sandbox(code_str: str):
     output_lines = []
     try:
-        # Fixed to use Sandbox.create() for the updated E2B SDK
         with Sandbox.create() as sandbox:
             execution = sandbox.run_code(code_str)
+            
+            # Capture standard console output
             if execution.logs.stdout:
                 output_lines.append("\n".join(execution.logs.stdout))
+                
+            # Capture standard error logs if any
             if execution.logs.stderr:
                 output_lines.append("\n⚠️ Runtime Error:\n" + "\n".join(execution.logs.stderr))
+                
+            # Capture E2B Jupyter-style execution errors (like 1 / 0 or NameError)
+            if execution.error:
+                tb_lines = "".join(execution.error.traceback) if execution.error.traceback else ""
+                output_lines.append(f"\n⚠️ Runtime Error:\n{execution.error.name}: {execution.error.value}\n{tb_lines}")
+                
             if not output_lines:
                 output_lines.append("✅ Code executed successfully with no output.")
     except Exception as e:
