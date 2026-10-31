@@ -40,6 +40,26 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# --- ROBUST GEMINI CALLER WITH FALLBACKS ---
+def ask_gemini(prompt_text: str) -> str:
+    # List of models to try in order if one experiences a 503 / high demand
+    models_to_try = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+    last_error = None
+    
+    for model_name in models_to_try:
+        try:
+            response = ai_client.models.generate_content(
+                model=model_name,
+                contents=prompt_text
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = e
+            continue
+            
+    raise last_error
+
 # --- 3. GEMINI AI BUG EXPLAINER ---
 def get_ai_fix(code: str, error: str) -> str:
     prompt = (
@@ -53,11 +73,7 @@ def get_ai_fix(code: str, error: str) -> str:
         "2. **Fix:** The corrected code block.\n"
         "Keep the total response under 1500 characters."
     )
-    response = ai_client.models.generate_content(
-        model="gemini-3.8-flash",  # Updated model name
-        contents=prompt
-    )
-    return response.text
+    return ask_gemini(prompt)
 
 # --- 4. E2B SANDBOX EXECUTION LOGIC ---
 def execute_code_in_sandbox(code_str: str):
@@ -130,10 +146,7 @@ async def ask(ctx, *, question: str = None):
     msg = await ctx.send("🧠 **Thinking...**")
     try:
         res = await asyncio.to_thread(
-            lambda: ai_client.models.generate_content(
-                model="gemini-3.8-flash",  # Updated model name
-                contents=f"Answer concisely with code examples if needed:\n{question}"
-            ).text
+            lambda: ask_gemini(f"Answer concisely with code examples if needed:\n{question}")
         )
         if len(res) > 1950:
             res = res[:1950] + "\n...(truncated)"
