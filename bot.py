@@ -60,7 +60,7 @@ def get_ai_fix(code: str, error: str) -> str:
 def execute_code_in_sandbox(code_str: str):
     output_lines = []
     try:
-        with Sandbox(api_key=E2B_API_KEY) as sandbox:
+        with Sandbox() as sandbox:
             execution = sandbox.run_code(code_str)
             if execution.logs.stdout:
                 output_lines.append("\n".join(execution.logs.stdout))
