@@ -152,35 +152,48 @@ def parse_multi_file_code(raw_code: str):
 # --- INTERACTIVE TOOLBAR VIEW ---
 class XompilerToolbarView(View):
     def __init__(self, response_text: str, plot_bytes: bytes = None, clean_code: str = "", author_name: str = "User"):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.response_text = response_text
         self.plot_bytes = plot_bytes
         self.clean_code = clean_code
         self.author_name = author_name
 
-    @discord.ui.button(label="🌍 Share Publicly", style=discord.ButtonStyle.green, row=0)
+    @discord.ui.button(label="🌍 Share Publicly", style=discord.ButtonStyle.green, row=0, custom_id="xompiler_share")
     async def share_button(self, interaction: discord.Interaction, button: Button):
-        button.disabled = True
-        await interaction.response.edit_message(view=self)
+        try:
+            button.disabled = True
+            button.label = "Shared ✅"
+            await interaction.response.edit_message(view=self)
 
-        if self.plot_bytes:
-            file_obj = discord.File(io.BytesIO(self.plot_bytes), filename="xompiler_plot.png")
-            await interaction.channel.send(f"🔓 **Shared output by {self.author_name}:**\n{self.response_text}", file=file_obj)
-        else:
-            await interaction.channel.send(f"🔓 **Shared output by {self.author_name}:**\n{self.response_text}")
+            if self.plot_bytes:
+                file_obj = discord.File(io.BytesIO(self.plot_bytes), filename="xompiler_plot.png")
+                await interaction.channel.send(f"🔓 **Shared output by {self.author_name}:**\n{self.response_text}", file=file_obj)
+            else:
+                await interaction.channel.send(f"🔓 **Shared output by {self.author_name}:**\n{self.response_text}")
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error sharing: {e}", ephemeral=True)
 
-    @discord.ui.button(label="📥 Download File", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="📥 Download File", style=discord.ButtonStyle.secondary, row=0, custom_id="xompiler_download")
     async def download_button(self, interaction: discord.Interaction, button: Button):
-        code_file = discord.File(io.BytesIO(self.clean_code.encode('utf-8')), filename="script.py")
-        await interaction.response.send_message("📥 Here is your downloadable script file:", file=code_file, ephemeral=True)
+        try:
+            code_file = discord.File(io.BytesIO(self.clean_code.encode('utf-8')), filename="script.py")
+            await interaction.response.send_message("📥 Here is your downloadable script file:", file=code_file, ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error downloading file: {e}", ephemeral=True)
 
-    @discord.ui.button(label="🔄 Re-run", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="🔄 Re-run", style=discord.ButtonStyle.primary, row=0, custom_id="xompiler_rerun")
     async def rerun_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True)
-        msg = await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True)
-        await execute_and_render_code(interaction, self.clean_code, {}, "", existing_msg=msg)
+        try:
+            await interaction.response.send_message("🔄 Re-running your code snippet...", ephemeral=True)
+            msg = await interaction.original_response()
+            await execute_and_render_code(interaction, self.clean_code, {}, "", existing_msg=msg)
+        except Exception as e:
+            try:
+                await interaction.followup.send(f"❌ Re-run error: {e}", ephemeral=True)
+            except:
+                pass
 
-    @discord.ui.button(label="🧹 Format Code", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="🧹 Format Code", style=discord.ButtonStyle.secondary, row=0, custom_id="xompiler_format")
     async def format_button(self, interaction: discord.Interaction, button: Button):
         try:
             formatted = textwrap.dedent(self.clean_code).strip()
@@ -316,7 +329,6 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Acknowledge the modal instantly so Discord never times out
         await interaction.response.send_message("⏱️ Initializing secure sandbox and executing...", ephemeral=True)
         msg = await interaction.original_response()
 
