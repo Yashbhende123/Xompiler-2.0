@@ -7,7 +7,7 @@ import io
 from threading import Thread
 from flask import Flask
 import discord
-from discord.ui import Modal, TextInput
+from discord.ui import Modal, TextInput, View, Button
 from discord.ext import commands
 from dotenv import load_dotenv
 from e2b_code_interpreter import Sandbox
@@ -69,7 +69,7 @@ def save_snippets_to_disk(data):
     except Exception as e:
         print(f"Error saving snippets: {e}")
 
-# --- ROBUST GEMINI CALLER WITH FALLBACKS & FAIL-SAFE ---
+# --- ROBUST GEMINI CALLER (For !ask command) ---
 def ask_gemini(prompt_text: str) -> str:
     if not ai_client:
         return "AI features are currently unavailable (Missing API Key or Client Init Error)."
@@ -91,21 +91,6 @@ def ask_gemini(prompt_text: str) -> str:
             
     return f"AI Error: Unable to generate response. Details: {str(last_error)}"
 
-def get_code_audit(code: str, execution_time: float, output: str) -> str:
-    prompt = (
-        "You are Xompiler AI's Performance & Complexity Profiler.\n"
-        "Analyze the following Python script:\n"
-        f"```python\n{code}\n```\n\n"
-        f"Execution Time in Sandbox: {execution_time:.4f} seconds\n"
-        f"Execution Output / Result:\n```\n{output}\n```\n\n"
-        "Provide a concise performance audit containing:\n"
-        "1. **Big-O Complexity:** Estimated Time Complexity and Space Complexity (DO NOT use LaTeX or dollar signs like $O(1)$. Write plain text like O(1) or O(N)).\n"
-        "2. **Bottlenecks / Insights:** 1-2 sentences on efficiency or potential performance pitfalls.\n"
-        "3. **Optimization Tip:** A quick way to make it faster if applicable.\n"
-        "Keep the response clean and under 1500 characters."
-    )
-    return ask_gemini(prompt)
-
 @bot.event
 async def on_ready():
     try:
@@ -115,9 +100,30 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Failed to sync slash commands: {e}")
 
-# --- CORE EXECUTION & MATPLOTLIB CAPTURE ENGINE (PRIVATE / EPHEMERAL) ---
-async def execute_and_profile_code(interaction: discord.Interaction, clean_code: str, sandbox_files: dict, input_data: str):
-    # 1. Automatically inject matplotlib headless backend and auto-saver wrapper
+# --- SHARE VIEW (BUTTON TO MAKE OUTPUT PUBLIC) ---
+class ShareView(View):
+    def __init__(self, response_text: str, plot_bytes: bytes = None, author_name: str = "User"):
+        super().__init__(timeout=180)
+        self.response_text = response_text
+        self.plot_bytes = plot_bytes
+        self.author_name = author_name
+
+    @discord.ui.button(label="🌍 Share Publicly", style=discord.ButtonStyle.green)
+    async def share_button(self, interaction: discord.Interaction, button: Button):
+        button.disabled = True
+        button.label = "Shared Publicly ✅"
+        await interaction.response.edit_message(view=self)
+
+        # Send public message to the channel
+        if self.plot_bytes:
+            file_obj = discord.File(io.BytesIO(self.plot_bytes), filename="xompiler_plot.png")
+            await interaction.channel.send(f"🔓 **Shared output by {self.author_name}:**\n{self.response_text}", file=file_obj)
+        else:
+            await interaction.channel.send(f"🔓 **Shared output by {self.author_name}:**\n{self.response_text}")
+
+# --- CORE EXECUTION & MATPLOTLIB CAPTURE ENGINE ---
+async def execute_and_render_code(interaction: discord.Interaction, clean_code: str, sandbox_files: dict, input_data: str):
+    # Inject matplotlib headless backend
     matplotlib_wrapper = (
         "import sys\n"
         "try:\n"
@@ -154,7 +160,7 @@ async def execute_and_profile_code(interaction: discord.Interaction, clean_code:
         "    pass\n"
     )
 
-    msg = await interaction.followup.send(f"⏱️ Profiling code execution and rendering graphs privately for **{interaction.user.name}**...", ephemeral=True)
+    msg = await interaction.followup.send(f"⏱️ Executing code privately for **{interaction.user.name}**...", ephemeral=True)
 
     def run_sandbox():
         output_lines = []
@@ -201,36 +207,28 @@ async def execute_and_profile_code(interaction: discord.Interaction, clean_code:
 
     response_text = f"📊 **Execution Output ({exec_time:.4f}s):**\n```ansi\n{result}\n```"
     
-    # Send output with graph attachment if available
+    share_view = ShareView(response_text, plot_data, interaction.user.name)
+
+    # Send output with graph attachment if available (Entirely Private / Ephemeral)
     if plot_data:
         file_obj = discord.File(io.BytesIO(plot_data), filename="xompiler_plot.png")
-        await msg.edit(content=response_text, attachments=[file_obj])
+        await msg.edit(content=response_text, attachments=[file_obj], view=share_view)
     else:
-        await msg.edit(content=response_text)
-
-    # 🧠 Generate AI Complexity Audit Privately
-    audit_msg = await interaction.followup.send("🔍 **Xompiler AI is profiling Big-O complexity & performance privately...**", ephemeral=True)
-    try:
-        complexity_report = await asyncio.to_thread(get_code_audit, clean_code, exec_time, result)
-        if len(complexity_report) > 1900:
-            complexity_report = complexity_report[:1900] + "\n...(truncated)"
-        await audit_msg.edit(content=f"📈 **Performance & Complexity Audit:**\n{complexity_report}")
-    except Exception as e:
-        await audit_msg.edit(content=f"❌ Profiler AI Error: `{e}`")
+        await msg.edit(content=response_text, view=share_view)
 
 # --- INTERACTIVE MULTI-LINE CODEBOX MODAL ---
 class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     code_input = TextInput(
         label="Python Source Code (Matplotlib supported)",
         style=discord.TextStyle.paragraph,
-        placeholder="import matplotlib.pyplot as plt\nplt.plot([1,2,3], [4,5,6])\nplt.show()",
+        placeholder="print('Hello, Xompiler!')",
         required=True,
         max_length=2000
     )
     stdin_input = TextInput(
         label="Stdin / Program Inputs (Optional)",
         style=discord.TextStyle.short,
-        placeholder="e.g. yash 21 (separated by spaces)",
+        placeholder="e.g. yash 21",
         required=False,
         max_length=200
     )
@@ -245,12 +243,12 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
                 lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
                 code_text = "\n".join(lines)
 
-        await execute_and_profile_code(interaction, code_text, {}, self.stdin_input.value or "")
+        await execute_and_render_code(interaction, code_text, {}, self.stdin_input.value or "")
 
 # --- 3. SLASH COMMANDS (/profile & /codebox) ---
-@bot.tree.command(name="profile", description="Privately execute code (with Matplotlib support) and analyze Big-O")
+@bot.tree.command(name="profile", description="Privately execute code and render optional plots")
 @discord.app_commands.describe(
-    code="Your Python source code to profile",
+    code="Your Python source code",
     file="Optional source file (.py or .txt)",
     stdin="Program inputs (e.g. yash 21)"
 )
@@ -288,13 +286,13 @@ async def profile(
             clean_code = code_text if not clean_code else clean_code + "\n" + code_text
 
         if not clean_code and not sandbox_files:
-            await interaction.followup.send("❌ Please provide some code or upload a file to profile!", ephemeral=True)
+            await interaction.followup.send("❌ Please provide some code or upload a file to execute!", ephemeral=True)
             return
 
-        await execute_and_profile_code(interaction, clean_code, sandbox_files, stdin or "")
+        await execute_and_render_code(interaction, clean_code, sandbox_files, stdin or "")
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Critical profiling error: `{str(e)}`", ephemeral=True)
+        await interaction.followup.send(f"❌ Critical execution error: `{str(e)}`", ephemeral=True)
 
 @bot.tree.command(name="codebox", description="Open a secure multi-line code editor popup window")
 async def codebox(interaction: discord.Interaction):
