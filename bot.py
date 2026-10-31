@@ -175,9 +175,9 @@ class XompilerToolbarView(View):
 
     @discord.ui.button(label="🤖 Fix with AI", style=discord.ButtonStyle.blurple, row=0, custom_id="xompiler_fix_ai")
     async def fix_ai_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
         try:
-            await interaction.response.send_message("🤖 Xompiler AI is analyzing your error and debugging the code...", ephemeral=True)
-            msg = await interaction.original_response()
+            msg = await interaction.followup.send("🤖 Xompiler AI is analyzing your error and debugging the code...", ephemeral=True)
 
             prompt = (
                 "You are an expert Python debugging assistant.\n"
@@ -218,9 +218,9 @@ class XompilerToolbarView(View):
 
     @discord.ui.button(label="🔄 Re-run", style=discord.ButtonStyle.primary, row=1, custom_id="xompiler_rerun")
     async def rerun_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
         try:
-            await interaction.response.send_message("🔄 Re-running your code snippet...", ephemeral=True)
-            msg = await interaction.original_response()
+            msg = await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True)
             await execute_and_render_code(interaction, self.clean_code, {}, "", existing_msg=msg)
         except Exception as e:
             try:
