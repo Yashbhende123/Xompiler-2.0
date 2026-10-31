@@ -34,12 +34,26 @@ def keep_alive():
     t = Thread(target=run_web, daemon=True)
     t.start()
 
-# --- 2. INITIALIZE CLIENTS ---
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+# --- 2. INITIALIZE CLIENTS & FAIL-SAFE SETUP ---
+try:
+    ai_client = genai.Client(api_key=GEMINI_API_KEY)
+except Exception as e:
+    print(f"⚠️ Warning: Gemini Client initialization failed: {e}")
+    ai_client = None
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- GLOBAL COMMAND ERROR HANDLER (FAIL-SAFE) ---
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        return  # Ignore unknown commands to prevent crashing or spamming
+    try:
+        await ctx.send(f"❌ An error occurred while executing this command: `{str(error)}`")
+    except Exception:
+        pass
 
 # --- SNIPPET STORAGE UTILITIES ---
 SNIPPET_FILE = "snippets.json"
@@ -60,8 +74,11 @@ def save_snippets_to_disk(data):
     except Exception as e:
         print(f"Error saving snippets: {e}")
 
-# --- ROBUST GEMINI CALLER WITH FALLBACKS ---
+# --- ROBUST GEMINI CALLER WITH FALLBACKS & FAIL-SAFE ---
 def ask_gemini(prompt_text: str) -> str:
+    if not ai_client:
+        return "AI features are currently unavailable (Missing API Key or Client Init Error)."
+    
     models_to_try = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3.8-flash"]
     last_error = None
     
@@ -77,7 +94,7 @@ def ask_gemini(prompt_text: str) -> str:
             last_error = e
             continue
             
-    raise last_error
+    return f"AI Error: Unable to generate response. Details: {str(last_error)}"
 
 # --- 3. GEMINI AI BUG EXPLAINER ---
 def get_ai_fix(code: str, error: str) -> str:
@@ -98,119 +115,125 @@ def get_ai_fix(code: str, error: str) -> str:
 async def on_ready():
     print(f"✅ Logged in as {bot.user} (Xompiler AI Edition)")
 
-# --- 4. DISCORD COMMANDS (WITH INPUT & FILE SUPPORT) ---
+# --- 4. DISCORD COMMANDS (WITH FAIL-SAFE EXECUTION, INPUT & FILE SUPPORT) ---
 @bot.command()
 async def run(ctx, *, code_block: str = None):
-    clean_code = ""
-    sandbox_files = {}
+    try:
+        clean_code = ""
+        sandbox_files = {}
 
-    # Handle file attachments if uploaded
-    if ctx.message.attachments:
-        for attachment in ctx.message.attachments:
-            try:
-                file_bytes = await attachment.read()
-                file_content = file_bytes.decode('utf-8')
-                if attachment.filename.endswith('.py') and not code_block:
-                    clean_code = file_content
-                else:
-                    sandbox_files[attachment.filename] = file_content
-            except Exception as e:
-                await ctx.send(f"⚠️ Failed to read attachment `{attachment.filename}`: {e}")
-                return
+        # Handle file attachments if uploaded safely
+        if ctx.message.attachments:
+            for attachment in ctx.message.attachments:
+                try:
+                    file_bytes = await attachment.read()
+                    file_content = file_bytes.decode('utf-8', errors='ignore')
+                    if attachment.filename.endswith('.py') and not code_block:
+                        clean_code = file_content
+                    else:
+                        sandbox_files[attachment.filename] = file_content
+                except Exception as e:
+                    await ctx.send(f"⚠️ Failed to read attachment `{attachment.filename}`: {e}")
+                    return
 
-    # Parse code block if text was provided
-    if code_block:
-        code_text = code_block.strip()
-        if code_text.startswith("```"):
-            lines = code_text.splitlines()
-            if len(lines) >= 2:
-                lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
-                code_text = "\n".join(lines)
-        clean_code = code_text if not clean_code else clean_code + "\n" + code_text
+        # Parse code block if text was provided
+        if code_block:
+            code_text = code_block.strip()
+            if code_text.startswith("```"):
+                lines = code_text.splitlines()
+                if len(lines) >= 2:
+                    lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
+                    code_text = "\n".join(lines)
+            clean_code = code_text if not clean_code else clean_code + "\n" + code_text
 
-    if not clean_code and not sandbox_files:
-        await ctx.send("❌ Please provide some code to run or attach a file! Example: `!run print('Hello')`")
-        return
+        if not clean_code and not sandbox_files:
+            await ctx.send("❌ Please provide some code to run or attach a file! Example: `!run print('Hello')`")
+            return
 
-    # Handle interactive input() if present in code
-    if "input(" in clean_code:
-        await ctx.send("📥 **This program needs input.** Please reply in this channel within 60s with your input value:")
-        
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel
-
-        try:
-            user_msg = await bot.wait_for('message', timeout=60.0, check=check)
-            user_input_value = user_msg.content
+        # Handle interactive input() securely locked to command author
+        if "input(" in clean_code:
+            await ctx.send("📥 **This program needs input.** Please reply in this channel within 60s with your input value:")
             
-            # Override built-in input to pipe user's response safely into the sandbox
-            clean_code = (
-                "import sys\nfrom io import StringIO\n"
-                f"_input_stream = StringIO({repr(user_input_value)} + '\\n')\n"
-                "def custom_input(prompt=''):\n"
-                "    print(prompt, end='')\n"
-                "    line = _input_stream.readline()\n"
-                "    if not line: return ''\n"
-                "    return line.strip()\n"
-                "__builtins__.input = custom_input\n\n"
-            ) + clean_code
-        except asyncio.TimeoutError:
-            await ctx.send("⏳ Input prompt timed out. Running without input...")
+            def check(m):
+                return m.author == ctx.author and m.channel == ctx.channel
 
-    msg = await ctx.send(f"⏳ Running code for **{ctx.author.name}**...")
-
-    # Execute inside E2B Sandbox with attached files
-    def execute_in_sandbox():
-        output_lines = []
-        try:
-            with Sandbox.create() as sandbox:
-                for filename, content in sandbox_files.items():
-                    sandbox.files.write(filename, content)
-
-                execution = sandbox.run_code(clean_code)
+            try:
+                user_msg = await bot.wait_for('message', timeout=60.0, check=check)
+                user_input_value = user_msg.content
                 
-                if execution.logs.stdout:
-                    output_lines.extend(execution.logs.stdout)
-                if execution.logs.stderr:
-                    output_lines.append("\n⚠️ Runtime Error:\n" + "\n".join(execution.logs.stderr))
-                if execution.error:
-                    tb_lines = "".join(execution.error.traceback) if execution.error.traceback else ""
-                    output_lines.append(f"\n⚠️ Runtime Error:\n{execution.error.name}: {execution.error.value}\n{tb_lines}")
-                
-                if not output_lines:
-                    output_lines.append("✅ Code executed successfully with no output.")
-        except Exception as e:
-            output_lines.append(f"❌ Sandbox Connection Error: {str(e)}")
-        
-        return "\n".join(output_lines)
+                # Override built-in input to handle multi-input sequences safely
+                clean_code = (
+                    "import sys\nfrom io import StringIO\n"
+                    f"_inputs = {repr(user_input_value)}.split()\n"
+                    "_input_iter = iter(_inputs)\n"
+                    "def custom_input(prompt=''):\n"
+                    "    print(prompt, end='')\n"
+                    "    try:\n"
+                    "        return next(_input_iter)\n"
+                    "    except StopIteration:\n"
+                    "        return ''\n"
+                    "__builtins__.input = custom_input\n\n"
+                ) + clean_code
+            except asyncio.TimeoutError:
+                await ctx.send("⏳ Input prompt timed out. Running without input...")
 
-    result = await asyncio.to_thread(execute_in_sandbox)
+        msg = await ctx.send(f"⏳ Running code for **{ctx.author.name}**...")
 
-    if len(result) > 1900:
-        result = result[:1900] + "\n...(Output truncated)"
+        # Execute inside E2B Sandbox with full fail-safe protection
+        def execute_in_sandbox():
+            output_lines = []
+            try:
+                with Sandbox.create() as sandbox:
+                    for filename, content in sandbox_files.items():
+                        sandbox.files.write(filename, content)
 
-    response_text = f"Output for **{ctx.author.name}**:\n```ansi\n{result}\n```"
-    await msg.edit(content=response_text)
+                    execution = sandbox.run_code(clean_code)
+                    
+                    if execution.logs.stdout:
+                        output_lines.extend(execution.logs.stdout)
+                    if execution.logs.stderr:
+                        output_lines.append("\n⚠️ Runtime Error:\n" + "\n".join(execution.logs.stderr))
+                    if execution.error:
+                        tb_lines = "".join(execution.error.traceback) if execution.error.traceback else ""
+                        output_lines.append(f"\n⚠️ Runtime Error:\n{execution.error.name}: {execution.error.value}\n{tb_lines}")
+                    
+                    if not output_lines:
+                        output_lines.append("✅ Code executed successfully with no output.")
+            except Exception as e:
+                output_lines.append(f"❌ Sandbox Connection Error: {str(e)}")
+            
+            return "\n".join(output_lines)
 
-    # 🤖 AI Auto-Fix Trigger on Crash
-    if "⚠️ Runtime Error:" in result:
-        ai_msg = await ctx.send("🤖 **Xompiler AI is analyzing the crash...**")
-        try:
-            ai_suggestion = await asyncio.to_thread(get_ai_fix, clean_code, result)
-            if len(ai_suggestion) > 1900:
-                ai_suggestion = ai_suggestion[:1900] + "\n...(truncated)"
-            await ai_msg.edit(content=f"💡 **AI Debug Suggestion:**\n{ai_suggestion}")
-        except Exception as e:
-            await ai_msg.edit(content=f"❌ AI Error: `{e}`")
+        result = await asyncio.to_thread(execute_in_sandbox)
+
+        if len(result) > 1900:
+            result = result[:1900] + "\n...(Output truncated)"
+
+        response_text = f"Output for **{ctx.author.name}**:\n```ansi\n{result}\n```"
+        await msg.edit(content=response_text)
+
+        # 🤖 AI Auto-Fix Trigger on Crash with Fail-Safe
+        if "⚠️ Runtime Error:" in result:
+            ai_msg = await ctx.send("🤖 **Xompiler AI is analyzing the crash...**")
+            try:
+                ai_suggestion = await asyncio.to_thread(get_ai_fix, clean_code, result)
+                if len(ai_suggestion) > 1900:
+                    ai_suggestion = ai_suggestion[:1900] + "\n...(truncated)"
+                await ai_msg.edit(content=f"💡 **AI Debug Suggestion:**\n{ai_suggestion}")
+            except Exception as e:
+                await ai_msg.edit(content=f"❌ AI Error: `{e}`")
+
+    except Exception as e:
+        await ctx.send(f"❌ Critical execution error: `{str(e)}`")
 
 @bot.command()
 async def ask(ctx, *, question: str = None):
-    if not question:
-        await ctx.send("❌ Please ask a question! Example: `!ask What is a Python decorator?`")
-        return
-        
-    msg = await ctx.send("🧠 **Thinking...**")
     try:
+        if not question:
+            await ctx.send("❌ Please ask a question! Example: `!ask What is a Python decorator?`")
+            return
+            
+        msg = await ctx.send("🧠 **Thinking...**")
         res = await asyncio.to_thread(
             lambda: ask_gemini(f"Answer concisely with code examples if needed:\n{question}")
         )
@@ -218,60 +241,69 @@ async def ask(ctx, *, question: str = None):
             res = res[:1950] + "\n...(truncated)"
         await msg.edit(content=f"🧠 **Answer for {ctx.author.name}:**\n{res}")
     except Exception as e:
-        await msg.edit(content=f"❌ AI Error: `{e}`")
+        await ctx.send(f"❌ AI Command Error: `{str(e)}`")
 
 # --- 5. SNIPPET MANAGEMENT COMMANDS ---
 @bot.command()
 async def save(ctx, name: str = None, *, code_block: str = None):
-    if not name or not code_block:
-        await ctx.send("❌ Usage: `!save <name> <code>`")
-        return
+    try:
+        if not name or not code_block:
+            await ctx.send("❌ Usage: `!save <name> <code>`")
+            return
 
-    clean_code = code_block.strip()
-    if clean_code.startswith("```"):
-        lines = clean_code.splitlines()
-        if len(lines) >= 2:
-            lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
-            clean_code = "\n".join(lines)
+        clean_code = code_block.strip()
+        if clean_code.startswith("```"):
+            lines = clean_code.splitlines()
+            if len(lines) >= 2:
+                lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
+                clean_code = "\n".join(lines)
 
-    snippets = load_snippets()
-    snippets[name] = {
-        "code": clean_code,
-        "author": str(ctx.author)
-    }
-    save_snippets_to_disk(snippets)
-    await ctx.send(f"💾 Successfully saved snippet as **`{name}`**!")
+        snippets = load_snippets()
+        snippets[name] = {
+            "code": clean_code,
+            "author": str(ctx.author)
+        }
+        save_snippets_to_disk(snippets)
+        await ctx.send(f"💾 Successfully saved snippet as **`{name}`**!")
+    except Exception as e:
+        await ctx.send(f"❌ Error saving snippet: `{str(e)}`")
 
 @bot.command()
 async def load(ctx, name: str = None):
-    if not name:
-        await ctx.send("❌ Usage: `!load <name>`")
-        return
+    try:
+        if not name:
+            await ctx.send("❌ Usage: `!load <name>`")
+            return
 
-    snippets = load_snippets()
-    if name not in snippets:
-        await ctx.send(f"❌ Snippet **`{name}`** not found!")
-        return
+        snippets = load_snippets()
+        if name not in snippets:
+            await ctx.send(f"❌ Snippet **`{name}`** not found!")
+            return
 
-    data = snippets[name]
-    output = f"📁 **Snippet: `{name}`** (Saved by {data['author']}):\n```python\n{data['code']}\n```"
-    if len(output) > 2000:
-        output = output[:1950] + "\n...(truncated)\n```"
-    await ctx.send(output)
+        data = snippets[name]
+        output = f"📁 **Snippet: `{name}`** (Saved by {data['author']}):\n```python\n{data['code']}\n```"
+        if len(output) > 2000:
+            output = output[:1950] + "\n...(truncated)\n```"
+        await ctx.send(output)
+    except Exception as e:
+        await ctx.send(f"❌ Error loading snippet: `{str(e)}`")
 
 @bot.command()
 async def share(ctx, name: str = None):
-    if not name:
-        await ctx.send("❌ Usage: `!share <name>`")
-        return
+    try:
+        if not name:
+            await ctx.send("❌ Usage: `!share <name>`")
+            return
 
-    snippets = load_snippets()
-    if name not in snippets:
-        await ctx.send(f"❌ Snippet **`{name}`** not found to share!")
-        return
+        snippets = load_snippets()
+        if name not in snippets:
+            await ctx.send(f"❌ Snippet **`{name}`** not found to share!")
+            return
 
-    data = snippets[name]
-    await ctx.send(f"🔗 **{ctx.author.name} shared snippet `{name}`:**\n```python\n{data['code']}\n```")
+        data = snippets[name]
+        await ctx.send(f"🔗 **{ctx.author.name} shared snippet `{name}`:**\n```python\n{data['code']}\n```")
+    except Exception as e:
+        await ctx.send(f"❌ Error sharing snippet: `{str(e)}`")
 
 if __name__ == "__main__":
     keep_alive()
