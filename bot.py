@@ -42,8 +42,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- ROBUST GEMINI CALLER WITH FALLBACKS ---
 def ask_gemini(prompt_text: str) -> str:
-    # Use the current stable aliases supported by the GenAI SDK
-    models_to_try = ["gemini-flash-latest", "gemini-3.8-flash", "gemini-2.5-flash"]
+    # Set to use gemini-3.5-flash with stable backups if needed
+    models_to_try = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3.8-flash"]
     last_error = None
     
     for model_name in models_to_try:
