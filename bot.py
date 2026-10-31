@@ -178,7 +178,7 @@ class XompilerToolbarView(View):
     async def rerun_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
         msg = await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True)
-        await execute_and_render_code(interaction, self.clean_code, {}, "", msg)
+        await execute_and_render_code(interaction, self.clean_code, {}, "", existing_msg=msg)
 
     @discord.ui.button(label="🧹 Format Code", style=discord.ButtonStyle.secondary, row=0)
     async def format_button(self, interaction: discord.Interaction, button: Button):
@@ -301,7 +301,7 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
 # --- INTERACTIVE MULTI-LINE CODEBOX MODAL ---
 class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     code_input = TextInput(
-        label="Python Code (Supports Multi-File `# file: name.py`)",
+        label="Python Code",
         style=discord.TextStyle.paragraph,
         placeholder="print('Hello, Xompiler!')",
         required=True,
@@ -316,7 +316,10 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        # Acknowledge the modal instantly so Discord never times out
+        await interaction.response.send_message("⏱️ Initializing secure sandbox and executing...", ephemeral=True)
+        msg = await interaction.original_response()
+
         code_text = self.code_input.value.strip()
         
         if code_text.startswith("```"):
@@ -325,7 +328,7 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
                 lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
                 code_text = "\n".join(lines)
 
-        await execute_and_render_code(interaction, code_text, {}, self.stdin_input.value or "")
+        await execute_and_render_code(interaction, code_text, {}, self.stdin_input.value or "", existing_msg=msg)
 
 # --- 3. SLASH COMMANDS (/profile & /codebox) ---
 @bot.tree.command(name="profile", description="Privately execute code with multi-file and AST guardrails")
