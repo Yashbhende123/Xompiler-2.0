@@ -71,7 +71,7 @@ def save_snippets_to_disk(data):
     except Exception as e:
         print(f"Error saving snippets: {e}")
 
-# --- ROBUST GEMINI CALLER (For !ask command) ---
+# --- ROBUST GEMINI CALLER ---
 def ask_gemini(prompt_text: str) -> str:
     if not ai_client:
         return "AI features are currently unavailable (Missing API Key or Client Init Error)."
@@ -107,7 +107,7 @@ def security_scan(code: str):
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return None # Let standard execution catch syntax errors
+        return None 
 
     forbidden_modules = {'subprocess', 'ctypes', 'multiprocessing'}
     forbidden_funcs = {'eval', 'exec'}
@@ -173,7 +173,43 @@ class XompilerToolbarView(View):
         except Exception as e:
             await interaction.followup.send(f"❌ Error sharing: {e}", ephemeral=True)
 
-    @discord.ui.button(label="📥 Download File", style=discord.ButtonStyle.secondary, row=0, custom_id="xompiler_download")
+    @discord.ui.button(label="🤖 Fix with AI", style=discord.ButtonStyle.blurple, row=0, custom_id="xompiler_fix_ai")
+    async def fix_ai_button(self, interaction: discord.Interaction, button: Button):
+        try:
+            await interaction.response.send_message("🤖 Xompiler AI is analyzing your error and debugging the code...", ephemeral=True)
+            msg = await interaction.original_response()
+
+            prompt = (
+                "You are an expert Python debugging assistant.\n"
+                "The following Python code produced an error or failed execution:\n"
+                f"```python\n{self.clean_code}\n```\n\n"
+                f"Execution Output / Error:\n```\n{self.response_text}\n```\n\n"
+                "Fix the bug or error in the code. Return ONLY the corrected Python code inside a clean markdown code block (```python ... ```) without any conversational explanation."
+            )
+
+            ai_response = await asyncio.to_thread(lambda: ask_gemini(prompt))
+            
+            # Extract code block from AI response
+            fixed_code = ai_response
+            if "```python" in ai_response:
+                parts = ai_response.split("```python")
+                if len(parts) > 1:
+                    fixed_code = parts[1].split("```")[0].strip()
+            elif "```" in ai_response:
+                parts = ai_response.split("```")
+                if len(parts) > 1:
+                    fixed_code = parts[1].split("```")[0].strip()
+
+            await msg.edit(content="✨ **AI Fixed Code Generated! Re-running fixed version...**")
+            await execute_and_render_code(interaction, fixed_code, {}, "", existing_msg=msg)
+
+        except Exception as e:
+            try:
+                await interaction.followup.send(f"❌ AI Fix Error: {e}", ephemeral=True)
+            except:
+                pass
+
+    @discord.ui.button(label="📥 Download File", style=discord.ButtonStyle.secondary, row=1, custom_id="xompiler_download")
     async def download_button(self, interaction: discord.Interaction, button: Button):
         try:
             code_file = discord.File(io.BytesIO(self.clean_code.encode('utf-8')), filename="script.py")
@@ -181,7 +217,7 @@ class XompilerToolbarView(View):
         except Exception as e:
             await interaction.response.send_message(f"❌ Error downloading file: {e}", ephemeral=True)
 
-    @discord.ui.button(label="🔄 Re-run", style=discord.ButtonStyle.primary, row=0, custom_id="xompiler_rerun")
+    @discord.ui.button(label="🔄 Re-run", style=discord.ButtonStyle.primary, row=1, custom_id="xompiler_rerun")
     async def rerun_button(self, interaction: discord.Interaction, button: Button):
         try:
             await interaction.response.send_message("🔄 Re-running your code snippet...", ephemeral=True)
@@ -193,7 +229,7 @@ class XompilerToolbarView(View):
             except:
                 pass
 
-    @discord.ui.button(label="🧹 Format Code", style=discord.ButtonStyle.secondary, row=0, custom_id="xompiler_format")
+    @discord.ui.button(label="🧹 Format Code", style=discord.ButtonStyle.secondary, row=1, custom_id="xompiler_format")
     async def format_button(self, interaction: discord.Interaction, button: Button):
         try:
             formatted = textwrap.dedent(self.clean_code).strip()
@@ -415,7 +451,7 @@ async def ask(ctx, *, question: str = None):
 @bot.command()
 async def save(ctx, name: str = None, *, code_block: str = None):
     if not name or not code_block:
-        await ctx.send("❌ Usage: `!save <name> <code>`")
+        await ctx.save("❌ Usage: `!save <name> <code>`")
         return
     snippets = load_snippets()
     snippets[name] = {"code": code_block.strip(), "author": str(ctx.author)}
