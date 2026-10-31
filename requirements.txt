@@ -2,3 +2,4 @@ discord.py
 e2b-code-interpreter
 python-dotenv
 flask
+google-genai
