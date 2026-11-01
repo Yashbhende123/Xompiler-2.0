@@ -6,6 +6,7 @@ import time
 import io
 import textwrap
 import ast
+import datetime
 from threading import Thread
 from flask import Flask
 import discord
@@ -22,7 +23,7 @@ E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
-LOG_CHANNEL_ID = 1566318931864715395  # ⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
+LOG_CHANNEL_ID = 1566318931864715395  #⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
 
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
@@ -150,7 +151,7 @@ class ModerationActionView(View):
             await self.member.kick(reason="Flagged content violation via Xompiler Audit log.")
             await interaction.response.send_message(f"👢 Kicked **{self.member.name}** from the server.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to kick user: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Failed to kick user (Check bot role hierarchy / permissions): {e}", ephemeral=True)
 
     @discord.ui.button(label="⏰ Timeout", style=discord.ButtonStyle.primary, custom_id="mod_timeout")
     async def timeout_button(self, interaction: discord.Interaction, button: Button):
@@ -158,11 +159,11 @@ class ModerationActionView(View):
             await interaction.response.send_message(f"❌ You do not have permission to timeout members.", ephemeral=True)
             return
         try:
-            duration = discord.utils.utcnow() + discord.Timedelta(minutes=10)
+            duration = discord.utils.utcnow() + datetime.timedelta(minutes=10)
             await self.member.timeout(duration, reason="Inappropriate code/output generation.")
             await interaction.response.send_message(f"⏰ Timed out **{self.member.name}** for 10 minutes.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to timeout user: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Failed to timeout user (Check bot role hierarchy / permissions): {e}", ephemeral=True)
 
     @discord.ui.button(label="🔨 Ban", style=discord.ButtonStyle.danger, custom_id="mod_ban")
     async def ban_button(self, interaction: discord.Interaction, button: Button):
@@ -173,7 +174,7 @@ class ModerationActionView(View):
             await self.member.ban(reason="Severe content safety policy violation via code compiler.")
             await interaction.response.send_message(f"🔨 Banned **{self.member.name}** from the server.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to ban user: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Failed to ban user (Check bot role hierarchy / permissions): {e}", ephemeral=True)
 
 # --- INTERACTIVE TOOLBAR VIEW (With Dynamic Share Button Removal) ---
 class XompilerToolbarView(View):
