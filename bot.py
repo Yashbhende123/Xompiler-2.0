@@ -6,7 +6,6 @@ import time
 import io
 import textwrap
 import ast
-import datetime
 from threading import Thread
 from flask import Flask
 import discord
@@ -21,9 +20,6 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
-LOG_CHANNEL_ID = 1566318931864715395  #⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
 
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
@@ -51,7 +47,6 @@ except Exception as e:
     ai_client = None
 
 intents = discord.Intents.default()
-intents.members = True # Required for moderation actions (Make sure Server Members Intent is enabled in Discord Developer Portal)
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Your specific Server Guild ID for instant slash command sync
@@ -98,104 +93,73 @@ def ask_gemini(prompt_text: str) -> str:
             
     return f"AI Error: Unable to generate response. Details: {str(last_error)}"
 
-# --- STRICT CONTENT SAFETY CLASSIFIER ---
-def classify_content_safety(text_content: str) -> str:
-    # 1. Hardcoded blacklist for instant zero-tolerance detection
-    forbidden_keywords = ["sex", "nsfw", "porn", "nude", "dick", "pussy", "fuck", "shit", "bitch", "cunt"]
-    lower_text = text_content.lower()
-    for word in forbidden_keywords:
-        if word in lower_text:
-            return "[SEXUAL/NSFW]"
-
-    if not ai_client:
-        return "[SAFE]"
-    
+@bot.event
+async def on_ready():
     try:
-        response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=(
-                "You are an extremely strict content moderation filter for a code compiler log. "
-                "Scan the text below for ANY inappropriate words, sexual terms (e.g. 'sex', slang, anatomical terms), profanity, hate speech, or abuse. "
-                "If the text contains ANY inappropriate language, slang, or sexual references, you MUST flag it as [SEXUAL/NSFW] or [ABUSE/HARASSMENT]. "
-                "Return ONLY the tag in brackets: [SAFE], [ABUSE/HARASSMENT], [VIOLENCE/THREAT], or [SEXUAL/NSFW].\n\n"
-                f"Content to analyze:\n{text_content[:1000]}"
-            )
-        )
-        return response.text.strip() if response and response.text else "[SAFE]"
-    except Exception:
-        return "[SAFE]"
+        bot.tree.copy_global_to(guild=MY_GUILD_ID)
+        await bot.tree.sync(guild=MY_GUILD_ID)
+        print(f"✅ Logged in as {bot.user} & Slash Commands synced instantly to your server!")
+    except Exception as e:
+        print(f"⚠️ Failed to sync slash commands: {e}")
 
-# --- MODERATION ACTION BUTTON VIEW ---
-class ModerationActionView(View):
-    def __init__(self, member: discord.Member):
-        super().__init__(timeout=None)
-        self.member = member
+# --- PRE-FLIGHT AST SECURITY GUARDRAIL ---
+def security_scan(code: str):
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None 
 
-    @discord.ui.button(label="⚠️ Warn", style=discord.ButtonStyle.secondary, custom_id="mod_warn")
-    async def warn_button(self, interaction: discord.Interaction, button: Button):
-        if not interaction.user.guild_permissions.moderate_members:
-            await interaction.response.send_message("❌ You do not have permission to moderate members.", ephemeral=True)
-            return
-        try:
-            await self.member.send("⚠️ You have received a warning from the server staff regarding inappropriate code compilation.")
-            await interaction.response.send_message(f"✅ Warned **{self.member.name}** successfully.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"⚠️ Could not DM user, but warning registered: {e}", ephemeral=True)
+    forbidden_modules = {'subprocess', 'ctypes', 'multiprocessing'}
+    forbidden_funcs = {'eval', 'exec'}
 
-    @discord.ui.button(label="👢 Kick", style=discord.ButtonStyle.danger, custom_id="mod_kick")
-    async def kick_button(self, interaction: discord.Interaction, button: Button):
-        if not interaction.user.guild_permissions.kick_members:
-            await interaction.response.send_message("❌ You do not have permission to kick members.", ephemeral=True)
-            return
-        try:
-            await self.member.kick(reason="Flagged content violation via Xompiler Audit log.")
-            await interaction.response.send_message(f"👢 Kicked **{self.member.name}** from the server.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to kick user (Check bot role hierarchy / permissions): {e}", ephemeral=True)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in forbidden_modules:
+                    return f"🔒 **Security Guardrail Violation:** Importing restricted module `{alias.name}` is blocked for safety."
+        elif isinstance(node, ast.ImportFrom):
+            if node.module in forbidden_modules:
+                return f"🔒 **Security Guardrail Violation:** Importing from restricted module `{node.module}` is blocked."
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in forbidden_funcs:
+                return f"🔒 **Security Guardrail Violation:** Use of built-in function `{node.func.id}()` is restricted."
+    return None
 
-    @discord.ui.button(label="⏰ Timeout", style=discord.ButtonStyle.primary, custom_id="mod_timeout")
-    async def timeout_button(self, interaction: discord.Interaction, button: Button):
-        if not interaction.user.guild_permissions.moderate_members:
-            await interaction.response.send_message(f"❌ You do not have permission to timeout members.", ephemeral=True)
-            return
-        try:
-            duration = discord.utils.utcnow() + datetime.timedelta(minutes=10)
-            await self.member.timeout(duration, reason="Inappropriate code/output generation.")
-            await interaction.response.send_message(f"⏰ Timed out **{self.member.name}** for 10 minutes.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to timeout user (Check bot role hierarchy / permissions): {e}", ephemeral=True)
+# --- MULTI-FILE PROJECT PARSER ---
+def parse_multi_file_code(raw_code: str):
+    files = {}
+    current_file = "main.py"
+    current_lines = []
 
-    @discord.ui.button(label="🔨 Ban", style=discord.ButtonStyle.danger, custom_id="mod_ban")
-    async def ban_button(self, interaction: discord.Interaction, button: Button):
-        if not interaction.user.guild_permissions.ban_members:
-            await interaction.response.send_message("❌ You do not have permission to ban members.", ephemeral=True)
-            return
-        try:
-            await self.member.ban(reason="Severe content safety policy violation via code compiler.")
-            await interaction.response.send_message(f"🔨 Banned **{self.member.name}** from the server.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to ban user (Check bot role hierarchy / permissions): {e}", ephemeral=True)
+    for line in raw_code.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# file:") or stripped.startswith("# filename:"):
+            if current_lines:
+                files[current_file] = "\n".join(current_lines).strip()
+                current_lines = []
+            current_file = stripped.split(":", 1)[1].strip()
+        else:
+            current_lines.append(line)
+    
+    if current_lines or not files:
+        files[current_file] = "\n".join(current_lines).strip()
 
-# --- INTERACTIVE TOOLBAR VIEW (With Dynamic Share Button Removal) ---
+    main_code = files.get("main.py", list(files.values())[0] if files else raw_code)
+    sandbox_files = {fname: content for fname, content in files.items() if fname != "main.py"}
+    
+    return main_code, sandbox_files
+
+# --- INTERACTIVE TOOLBAR VIEW ---
 class XompilerToolbarView(View):
-    def __init__(self, response_text: str, plot_bytes: bytes = None, clean_code: str = "", author_name: str = "User", is_flagged: bool = False):
+    def __init__(self, response_text: str, plot_bytes: bytes = None, clean_code: str = "", author_name: str = "User"):
         super().__init__(timeout=None)
         self.response_text = response_text
         self.plot_bytes = plot_bytes
         self.clean_code = clean_code
         self.author_name = author_name
-        self.is_flagged = is_flagged
 
-        # If flagged for violations, remove the share publicly button entirely
-        if not self.is_flagged:
-            self.add_item(self.share_button)
-        
-        self.add_item(self.fix_ai_button)
-        self.add_item(self.download_button)
-        self.add_item(self.rerun_button)
-        self.add_item(self.format_button)
-
-    async def share_button_callback(self, interaction: discord.Interaction, button: Button):
+    @discord.ui.button(label="🌍 Share Publicly", style=discord.ButtonStyle.green, row=0, custom_id="xompiler_share")
+    async def share_button(self, interaction: discord.Interaction, button: Button):
         try:
             button.disabled = True
             button.label = "Shared ✅"
@@ -209,8 +173,6 @@ class XompilerToolbarView(View):
         except Exception as e:
             await interaction.followup.send(f"❌ Error sharing: {e}", ephemeral=True)
 
-    share_button = Button(label="🌍 Share Publicly", style=discord.ButtonStyle.green, row=0, custom_id="xompiler_share")
-    
     @discord.ui.button(label="🤖 Fix with AI", style=discord.ButtonStyle.blurple, row=0, custom_id="xompiler_fix_ai")
     async def fix_ai_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
@@ -276,102 +238,6 @@ class XompilerToolbarView(View):
             await interaction.response.send_message(formatted_box, ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ Formatting error: {e}", ephemeral=True)
-
-# Bind callback to share button dynamically
-XompilerToolbarView.share_button.callback = XompilerToolbarView.share_button_callback
-
-# --- PRIVATE AUDIT LOG HELPER ---
-async def send_execution_log(bot_instance, guild, user, code_text, stdin_text, result_text, exec_time):
-    if not LOG_CHANNEL_ID or LOG_CHANNEL_ID == 0:
-        print("⚠️ LOG_CHANNEL_ID is not configured!")
-        return "[SAFE]"
-    try:
-        channel = bot_instance.get_channel(LOG_CHANNEL_ID)
-        if not channel and guild:
-            channel = guild.get_channel(LOG_CHANNEL_ID)
-        
-        combined_text = f"{code_text}\n{result_text}"
-        safety_tag = classify_content_safety(combined_text)
-        
-        if channel:
-            alert_prefix = "🟢 **Status: Safe Execution**"
-            is_flagged = any(flag in safety_tag for flag in ["ABUSE", "VIOLENCE", "THREAT", "SEXUAL"])
-            if is_flagged:
-                alert_prefix = "🚨 **FLAGGED CONTENT DETECTED!**"
-
-            log_content = (
-                f"{alert_prefix}\n"
-                f"🏷️ **Category Flag:** `{safety_tag}`\n"
-                f"👤 **User:** `{user.name}` (`{user.id}`)\n"
-                f"⏱️ **Execution Time:** `{exec_time:.4f}s`\n"
-                f"📥 **Stdin Inputs:** `{stdin_text if stdin_text else 'None'}`\n"
-                f"💻 **Source Code:**\n```python\n{code_text[:800]}\n```\n"
-                f"📊 **Output / Result:**\n```ansi\n{result_text[:1000]}\n```"
-            )
-            
-            mod_view = ModerationActionView(user) if isinstance(user, discord.Member) else None
-            await channel.send(log_content, view=mod_view)
-        
-        return safety_tag
-    except Exception as e:
-        print(f"⚠️ Failed to send execution log: {e}")
-        return "[SAFE]"
-
-@bot.event
-async def on_ready():
-    try:
-        bot.tree.copy_global_to(guild=MY_GUILD_ID)
-        await bot.tree.sync(guild=MY_GUILD_ID)
-        print(f"✅ Logged in as {bot.user} & Slash Commands synced instantly to your server!")
-    except Exception as e:
-        print(f"⚠️ Failed to sync slash commands: {e}")
-
-# --- PRE-FLIGHT AST SECURITY GUARDRAIL ---
-def security_scan(code: str):
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return None 
-
-    forbidden_modules = {'subprocess', 'ctypes', 'multiprocessing'}
-    forbidden_funcs = {'eval', 'exec'}
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in forbidden_modules:
-                    return f"🔒 **Security Guardrail Violation:** Importing restricted module `{alias.name}` is blocked for safety."
-        elif isinstance(node, ast.ImportFrom):
-            if node.module in forbidden_modules:
-                return f"🔒 **Security Guardrail Violation:** Importing from restricted module `{node.module}` is blocked."
-        elif isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id in forbidden_funcs:
-                return f"🔒 **Security Guardrail Violation:** Use of built-in function `{node.func.id}()` is restricted."
-    return None
-
-# --- MULTI-FILE PROJECT PARSER ---
-def parse_multi_file_code(raw_code: str):
-    files = {}
-    current_file = "main.py"
-    current_lines = []
-
-    for line in raw_code.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("# file:") or stripped.startswith("# filename:"):
-            if current_lines:
-                files[current_file] = "\n".join(current_lines).strip()
-                current_lines = []
-            current_file = stripped.split(":", 1)[1].strip()
-        else:
-            current_lines.append(line)
-    
-    if current_lines or not files:
-        files[current_file] = "\n".join(current_lines).strip()
-
-    main_code = files.get("main.py", list(files.values())[0] if files else raw_code)
-    sandbox_files = {fname: content for fname, content in files.items() if fname != "main.py"}
-    
-    return main_code, sandbox_files
 
 # --- CORE EXECUTION & MATPLOTLIB CAPTURE ENGINE ---
 async def execute_and_render_code(interaction: discord.Interaction, raw_code: str, sandbox_files: dict, input_data: str, existing_msg: discord.WebhookMessage = None):
@@ -465,26 +331,12 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
 
     result, exec_time, plot_data = await asyncio.to_thread(run_sandbox)
 
-    # 🚀 SEND DATA TO PRIVATE LOGS CHANNEL & GET SAFETY TAG
-    safety_tag = await send_execution_log(
-        bot_instance=interaction.client,
-        guild=interaction.guild,
-        user=interaction.user,
-        code_text=raw_code,
-        stdin_text=input_data,
-        result_text=result,
-        exec_time=exec_time
-    )
-
-    is_flagged = any(flag in safety_tag for flag in ["ABUSE", "VIOLENCE", "THREAT", "SEXUAL"])
-
     if len(result) > 1500:
         result = result[:1500] + "\n...(Output truncated)"
 
     response_text = f"📊 **Execution Output ({exec_time:.4f}s):**\n```ansi\n{result}\n```"
     
-    # Pass is_flagged to remove share button if inappropriate
-    toolbar_view = XompilerToolbarView(response_text, plot_data, main_code, interaction.user.name, is_flagged=is_flagged)
+    toolbar_view = XompilerToolbarView(response_text, plot_data, main_code, interaction.user.name)
 
     if plot_data:
         file_obj = discord.File(io.BytesIO(plot_data), filename="xompiler_plot.png")
@@ -510,8 +362,8 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        msg = await interaction.followup.send("⏱️ Initializing secure sandbox and executing...", ephemeral=True)
+        await interaction.response.send_message("⏱️ Initializing secure sandbox and executing...", ephemeral=True)
+        msg = await interaction.original_response()
 
         code_text = self.code_input.value.strip()
         
