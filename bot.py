@@ -21,6 +21,9 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
+LOG_CHANNEL_ID = 1566318931864715395  # Replace with your copied Discord Channel ID integer
+
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
 
@@ -92,6 +95,54 @@ def ask_gemini(prompt_text: str) -> str:
             continue
             
     return f"AI Error: Unable to generate response. Details: {str(last_error)}"
+
+# --- CONTENT SAFETY CLASSIFIER ---
+def classify_content_safety(text_content: str) -> str:
+    if not ai_client:
+        return "[SAFE]"
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Analyze the following code/output for safety violations. "
+                "Classify it strictly into one of these categories: [SAFE], [ABUSE/HARASSMENT], [VIOLENCE/THREAT], [SEXUAL/NSFW]. "
+                "Return ONLY the category tag in brackets.\n\n"
+                f"Content:\n{text_content[:1000]}"
+            )
+        )
+        return response.text.strip() if response and response.text else "[SAFE]"
+    except Exception:
+        return "[SAFE]"
+
+# --- PRIVATE AUDIT LOG HELPER ---
+async def send_execution_log(bot_instance, guild, user_name, code_text, stdin_text, result_text, exec_time):
+    if not LOG_CHANNEL_ID or LOG_CHANNEL_ID == 0:
+        return
+    try:
+        channel = bot_instance.get_channel(LOG_CHANNEL_ID)
+        if not channel and guild:
+            channel = guild.get_channel(LOG_CHANNEL_ID)
+        
+        if channel:
+            combined_text = f"{code_text}\n{result_text}"
+            safety_tag = classify_content_safety(combined_text)
+            
+            alert_prefix = "🟢 **Status: Safe Execution**"
+            if any(flag in safety_tag for flag in ["ABUSE", "VIOLENCE", "THREAT", "SEXUAL"]):
+                alert_prefix = "🚨 **FLAGGED CONTENT DETECTED!**"
+
+            log_content = (
+                f"{alert_prefix}\n"
+                f"🏷️ **Category Flag:** `{safety_tag}`\n"
+                f"👤 **User:** `{user_name}`\n"
+                f"⏱️ **Execution Time:** `{exec_time:.4f}s`\n"
+                f"📥 **Stdin Inputs:** `{stdin_text if stdin_text else 'None'}`\n"
+                f"💻 **Source Code:**\n```python\n{code_text[:800]}\n```\n"
+                f"📊 **Output / Result:**\n```ansi\n{result_text[:1000]}\n```"
+            )
+            await channel.send(log_content)
+    except Exception as e:
+        print(f"⚠️ Failed to send execution log: {e}")
 
 @bot.event
 async def on_ready():
@@ -330,6 +381,17 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
         return "\n".join(output_lines), elapsed_time, plot_bytes
 
     result, exec_time, plot_data = await asyncio.to_thread(run_sandbox)
+
+    # 🚀 SEND DATA TO PRIVATE LOGS CHANNEL WITH SAFETY CLASSIFICATION
+    await send_execution_log(
+        bot_instance=interaction.client,
+        guild=interaction.guild,
+        user_name=interaction.user.name,
+        code_text=raw_code,
+        stdin_text=input_data,
+        result_text=result,
+        exec_time=exec_time
+    )
 
     if len(result) > 1500:
         result = result[:1500] + "\n...(Output truncated)"
