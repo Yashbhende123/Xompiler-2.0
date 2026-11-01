@@ -22,7 +22,7 @@ E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
-LOG_CHANNEL_ID = 1566318931864715395  # ⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
+LOG_CHANNEL_ID = 1566318931864715395 # ⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
 
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
@@ -276,7 +276,7 @@ XompilerToolbarView.share_button.callback = XompilerToolbarView.share_button_cal
 async def send_execution_log(bot_instance, guild, user, code_text, stdin_text, result_text, exec_time):
     if not LOG_CHANNEL_ID or LOG_CHANNEL_ID == 0:
         print("⚠️ LOG_CHANNEL_ID is not configured!")
-        return safety_tag_default := "[SAFE]"
+        return "[SAFE]"
     try:
         channel = bot_instance.get_channel(LOG_CHANNEL_ID)
         if not channel and guild:
