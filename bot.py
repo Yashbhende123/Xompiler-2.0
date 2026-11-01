@@ -23,7 +23,7 @@ E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
-LOG_CHANNEL_ID = 1566318931864715395  #⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
+LOG_CHANNEL_ID = 1566318931864715395  # ⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
 
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
@@ -217,7 +217,8 @@ class XompilerToolbarView(View):
     async def fix_ai_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            msg = await interaction.followup.send("🤖 Xompiler AI is analyzing your error and debugging the code...", ephemeral=True)
+            # FIX: wait=True ensures msg is successfully returned and can be edited later
+            msg = await interaction.followup.send("🤖 Xompiler AI is analyzing your error and debugging the code...", ephemeral=True, wait=True)
 
             prompt = (
                 "You are an expert Python debugging assistant.\n"
@@ -229,22 +230,25 @@ class XompilerToolbarView(View):
 
             ai_response = await asyncio.to_thread(lambda: ask_gemini(prompt))
             
-            fixed_code = ai_response
-            if "```python" in ai_response:
-                parts = ai_response.split("```python")
-                if len(parts) > 1:
-                    fixed_code = parts[1].split("```")[0].strip()
-            elif "```" in ai_response:
-                parts = ai_response.split("```")
-                if len(parts) > 1:
-                    fixed_code = parts[1].split("```")[0].strip()
+            # FIX: Graceful handling if Gemini blocks the fix due to flagged profanity content
+            if "AI Error:" in ai_response:
+                fixed_code = "print('⚠️ Xompiler AI Error: Could not generate a fix (likely blocked by safety filters due to flagged terms).')"
+            else:
+                fixed_code = ai_response
+                if "```python" in ai_response:
+                    parts = ai_response.split("```python")
+                    if len(parts) > 1:
+                        fixed_code = parts[1].split("```")[0].strip()
+                elif "```" in ai_response:
+                    parts = ai_response.split("```")
+                    if len(parts) > 1:
+                        fixed_code = parts[1].split("```")[0].strip()
 
-            await msg.edit(content="✨ **AI Fixed Code Generated! Re-running fixed version...**")
             await execute_and_render_code(interaction, fixed_code, {}, "", existing_msg=msg)
 
-        except Exception:
+        except Exception as e:
             try:
-                await interaction.followup.send("❌ AI Fix Error occurred.", ephemeral=True)
+                await interaction.followup.send(f"❌ AI Fix Error: {e}", ephemeral=True)
             except Exception:
                 pass
 
@@ -260,7 +264,8 @@ class XompilerToolbarView(View):
     async def rerun_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            msg = await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True)
+            # FIX: wait=True ensures msg is properly instantiated
+            msg = await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True, wait=True)
             await execute_and_render_code(interaction, self.clean_code, {}, "", existing_msg=msg)
         except Exception:
             pass
@@ -433,7 +438,8 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
     if existing_msg:
         msg = existing_msg
     else:
-        msg = await interaction.followup.send(f"⏱️ Executing code privately for **{interaction.user.name}**...", ephemeral=True)
+        # FIX: wait=True added
+        msg = await interaction.followup.send(f"⏱️ Executing code privately for **{interaction.user.name}**...", ephemeral=True, wait=True)
 
     def run_sandbox():
         output_lines = []
@@ -491,23 +497,28 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
         result = result[:1500] + "\n...(Output truncated)"
 
     response_text = f"📊 **Execution Output ({exec_time:.4f}s):**\n```ansi\n{result}\n```"
-    
-    # Wrap view creation and msg edit in a try-except so the user ALWAYS gets an update
-    try:
-        toolbar_view = XompilerToolbarView(response_text, plot_data, main_code, interaction.user.name, is_flagged=is_flagged)
+    toolbar_view = XompilerToolbarView(response_text, plot_data, main_code, interaction.user.name, is_flagged=is_flagged)
 
-        if plot_data:
-            file_obj = discord.File(io.BytesIO(plot_data), filename="xompiler_plot.png")
-            await msg.edit(content=response_text, attachments=[file_obj], view=toolbar_view)
+    # FIX: Bulletproof edit handling
+    try:
+        if hasattr(msg, 'edit'):
+            if plot_data:
+                file_obj = discord.File(io.BytesIO(plot_data), filename="xompiler_plot.png")
+                await msg.edit(content=response_text, attachments=[file_obj], view=toolbar_view)
+            else:
+                await msg.edit(content=response_text, view=toolbar_view)
         else:
-            await msg.edit(content=response_text, view=toolbar_view)
+            if plot_data:
+                file_obj = discord.File(io.BytesIO(plot_data), filename="xompiler_plot.png")
+                await interaction.edit_original_response(content=response_text, attachments=[file_obj], view=toolbar_view)
+            else:
+                await interaction.edit_original_response(content=response_text, view=toolbar_view)
     except Exception as edit_err:
         print(f"⚠️ UI Edit failed: {edit_err}")
-        # Fallback to plain text if the complex view fails
         try:
-            await msg.edit(content=response_text)
-        except Exception as fallback_err:
-            print(f"⚠️ Fallback edit failed: {fallback_err}")
+            await interaction.edit_original_response(content=response_text, view=toolbar_view)
+        except Exception:
+            pass
 
 # --- INTERACTIVE MULTI-LINE CODEBOX MODAL ---
 class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
@@ -528,7 +539,8 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        msg = await interaction.followup.send("⏱️ Initializing secure sandbox and executing...", ephemeral=True)
+        # FIX: wait=True ensures msg is properly instantiated
+        msg = await interaction.followup.send("⏱️ Initializing secure sandbox and executing...", ephemeral=True, wait=True)
 
         code_text = self.code_input.value.strip()
         
