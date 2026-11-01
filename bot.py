@@ -21,9 +21,6 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
-LOG_CHANNEL_ID = 1566318931864715395 # Replace with your copied Discord Channel ID integer
-
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
 
@@ -95,56 +92,6 @@ def ask_gemini(prompt_text: str) -> str:
             continue
             
     return f"AI Error: Unable to generate response. Details: {str(last_error)}"
-
-# --- STRICT CONTENT SAFETY CLASSIFIER ---
-def classify_content_safety(text_content: str) -> str:
-    if not ai_client:
-        return "[SAFE]"
-    try:
-        response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=(
-                "You are a strict content moderation AI for a secure code compiler. "
-                "Analyze the following code or execution output for safety violations, profanity, explicit words, sexual content, abuse, or threats. "
-                "If the content contains ANY sexual terms (like 'sex', explicit anatomy, etc.), profanity, hate speech, or abusive language, you MUST flag it as [SEXUAL/NSFW] or [ABUSE/HARASSMENT]. "
-                "Only classify as [SAFE] if it is entirely clean code with zero profanity or sexual references. "
-                "Return ONLY the category tag in brackets, chosen from: [SAFE], [ABUSE/HARASSMENT], [VIOLENCE/THREAT], [SEXUAL/NSFW].\n\n"
-                f"Content:\n{text_content[:1000]}"
-            )
-        )
-        return response.text.strip() if response and response.text else "[SAFE]"
-    except Exception:
-        return "[SAFE]"
-
-# --- PRIVATE AUDIT LOG HELPER ---
-async def send_execution_log(bot_instance, guild, user_name, code_text, stdin_text, result_text, exec_time):
-    if not LOG_CHANNEL_ID or LOG_CHANNEL_ID == 0:
-        return
-    try:
-        channel = bot_instance.get_channel(LOG_CHANNEL_ID)
-        if not channel and guild:
-            channel = guild.get_channel(LOG_CHANNEL_ID)
-        
-        if channel:
-            combined_text = f"{code_text}\n{result_text}"
-            safety_tag = classify_content_safety(combined_text)
-            
-            alert_prefix = "🟢 **Status: Safe Execution**"
-            if any(flag in safety_tag for flag in ["ABUSE", "VIOLENCE", "THREAT", "SEXUAL"]):
-                alert_prefix = "🚨 **FLAGGED CONTENT DETECTED!**"
-
-            log_content = (
-                f"{alert_prefix}\n"
-                f"🏷️ **Category Flag:** `{safety_tag}`\n"
-                f"👤 **User:** `{user_name}`\n"
-                f"⏱️ **Execution Time:** `{exec_time:.4f}s`\n"
-                f"📥 **Stdin Inputs:** `{stdin_text if stdin_text else 'None'}`\n"
-                f"💻 **Source Code:**\n```python\n{code_text[:800]}\n```\n"
-                f"📊 **Output / Result:**\n```ansi\n{result_text[:1000]}\n```"
-            )
-            await channel.send(log_content)
-    except Exception as e:
-        print(f"⚠️ Failed to send execution log: {e}")
 
 @bot.event
 async def on_ready():
@@ -228,9 +175,9 @@ class XompilerToolbarView(View):
 
     @discord.ui.button(label="🤖 Fix with AI", style=discord.ButtonStyle.blurple, row=0, custom_id="xompiler_fix_ai")
     async def fix_ai_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True)
         try:
-            msg = await interaction.followup.send("🤖 Xompiler AI is analyzing your error and debugging the code...", ephemeral=True)
+            await interaction.response.send_message("🤖 Xompiler AI is analyzing your error and debugging the code...", ephemeral=True)
+            msg = await interaction.original_response()
 
             prompt = (
                 "You are an expert Python debugging assistant.\n"
@@ -242,6 +189,7 @@ class XompilerToolbarView(View):
 
             ai_response = await asyncio.to_thread(lambda: ask_gemini(prompt))
             
+            # Extract code block from AI response
             fixed_code = ai_response
             if "```python" in ai_response:
                 parts = ai_response.split("```python")
@@ -271,9 +219,9 @@ class XompilerToolbarView(View):
 
     @discord.ui.button(label="🔄 Re-run", style=discord.ButtonStyle.primary, row=1, custom_id="xompiler_rerun")
     async def rerun_button(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True)
         try:
-            msg = await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True)
+            await interaction.response.send_message("🔄 Re-running your code snippet...", ephemeral=True)
+            msg = await interaction.original_response()
             await execute_and_render_code(interaction, self.clean_code, {}, "", existing_msg=msg)
         except Exception as e:
             try:
@@ -294,6 +242,7 @@ class XompilerToolbarView(View):
 
 # --- CORE EXECUTION & MATPLOTLIB CAPTURE ENGINE ---
 async def execute_and_render_code(interaction: discord.Interaction, raw_code: str, sandbox_files: dict, input_data: str, existing_msg: discord.WebhookMessage = None):
+    # 1. Pre-Flight AST Security Scan
     security_error = security_scan(raw_code)
     if security_error:
         if existing_msg:
@@ -302,6 +251,7 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
             await interaction.followup.send(security_error, ephemeral=True)
         return
 
+    # 2. Parse Multi-File Projects
     main_code, parsed_files = parse_multi_file_code(raw_code)
     sandbox_files.update(parsed_files)
 
@@ -384,17 +334,6 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
 
     result, exec_time, plot_data = await asyncio.to_thread(run_sandbox)
 
-    # 🚀 SEND DATA TO PRIVATE LOGS CHANNEL WITH STRICT SAFETY CLASSIFICATION
-    await send_execution_log(
-        bot_instance=interaction.client,
-        guild=interaction.guild,
-        user_name=interaction.user.name,
-        code_text=raw_code,
-        stdin_text=input_data,
-        result_text=result,
-        exec_time=exec_time
-    )
-
     if len(result) > 1500:
         result = result[:1500] + "\n...(Output truncated)"
 
@@ -439,20 +378,7 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
 
         await execute_and_render_code(interaction, code_text, {}, self.stdin_input.value or "", existing_msg=msg)
 
-# --- 3. SLASH COMMANDS (/run, /profile, /codebox) ---
-@bot.tree.command(name="run", description="Execute code quickly")
-@discord.app_commands.describe(code="Your Python code to execute")
-async def run_slash(interaction: discord.Interaction, code: str):
-    await interaction.response.send_message("⏱️ Initializing secure sandbox and executing...", ephemeral=True)
-    msg = await interaction.original_response()
-    code_text = code.strip()
-    if code_text.startswith("```"):
-        lines = code_text.splitlines()
-        if len(lines) >= 2:
-            lines = lines[1:-1] if lines[-1].startswith("```") else lines[1:]
-            code_text = "\n".join(lines)
-    await execute_and_render_code(interaction, code_text, {}, "", existing_msg=msg)
-
+# --- 3. SLASH COMMANDS (/profile & /codebox) ---
 @bot.tree.command(name="profile", description="Privately execute code with multi-file and AST guardrails")
 @discord.app_commands.describe(
     code="Your Python source code",
@@ -507,6 +433,10 @@ async def codebox(interaction: discord.Interaction):
 
 # --- 4. STANDARD PREFIX COMMANDS ---
 @bot.command()
+async def run(ctx, *, code: str = None):
+    await ctx.send("⚡ Please use `/profile` or `/codebox` for secure private execution and interactive action toolbars!")
+
+@bot.command()
 async def ask(ctx, *, question: str = None):
     try:
         if not question:
@@ -521,7 +451,7 @@ async def ask(ctx, *, question: str = None):
 @bot.command()
 async def save(ctx, name: str = None, *, code_block: str = None):
     if not name or not code_block:
-        await ctx.send("❌ Usage: `!save <name> <code>`")
+        await ctx.save("❌ Usage: `!save <name> <code>`")
         return
     snippets = load_snippets()
     snippets[name] = {"code": code_block.strip(), "author": str(ctx.author)}
