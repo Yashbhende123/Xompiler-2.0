@@ -50,7 +50,7 @@ except Exception as e:
     ai_client = None
 
 intents = discord.Intents.default()
-intents.members = True # Required for moderation actions
+intents.members = True # Required for moderation actions (Make sure Server Members Intent is enabled in Discord Developer Portal)
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Your specific Server Guild ID for instant slash command sync
@@ -97,10 +97,18 @@ def ask_gemini(prompt_text: str) -> str:
             
     return f"AI Error: Unable to generate response. Details: {str(last_error)}"
 
-# --- AGGRESSIVE CONTENT SAFETY CLASSIFIER ---
+# --- STRICT CONTENT SAFETY CLASSIFIER ---
 def classify_content_safety(text_content: str) -> str:
+    # 1. Hardcoded blacklist for instant zero-tolerance detection
+    forbidden_keywords = ["sex", "nsfw", "porn", "nude", "dick", "pussy", "fuck", "shit", "bitch", "cunt"]
+    lower_text = text_content.lower()
+    for word in forbidden_keywords:
+        if word in lower_text:
+            return "[SEXUAL/NSFW]"
+
     if not ai_client:
         return "[SAFE]"
+    
     try:
         response = ai_client.models.generate_content(
             model="gemini-2.5-flash",
@@ -108,7 +116,6 @@ def classify_content_safety(text_content: str) -> str:
                 "You are an extremely strict content moderation filter for a code compiler log. "
                 "Scan the text below for ANY inappropriate words, sexual terms (e.g. 'sex', slang, anatomical terms), profanity, hate speech, or abuse. "
                 "If the text contains ANY inappropriate language, slang, or sexual references, you MUST flag it as [SEXUAL/NSFW] or [ABUSE/HARASSMENT]. "
-                "Do not pass inappropriate words as safe. Be extremely sensitive to filter violations. "
                 "Return ONLY the tag in brackets: [SAFE], [ABUSE/HARASSMENT], [VIOLENCE/THREAT], or [SEXUAL/NSFW].\n\n"
                 f"Content to analyze:\n{text_content[:1000]}"
             )
