@@ -22,7 +22,7 @@ E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
-LOG_CHANNEL_ID = 1566318931864715395 # ⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
+LOG_CHANNEL_ID = 1566318931864715395  # ⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
 
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
@@ -502,8 +502,8 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message("⏱️ Initializing secure sandbox and executing...", ephemeral=True)
-        msg = await interaction.original_response()
+        await interaction.response.defer(ephemeral=True)
+        msg = await interaction.followup.send("⏱️ Initializing secure sandbox and executing...", ephemeral=True)
 
         code_text = self.code_input.value.strip()
         
