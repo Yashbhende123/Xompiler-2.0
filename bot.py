@@ -23,7 +23,7 @@ E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
-LOG_CHANNEL_ID = 1566318931864715395 # ⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
+LOG_CHANNEL_ID = 1566318931864715395  #⚠️ REPLACE WITH YOUR REAL DISCORD CHANNEL ID INTEGER
 
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
@@ -184,7 +184,7 @@ class ModerationActionView(View):
         except Exception as e:
             await interaction.response.send_message(f"❌ Failed to ban user (Check bot role hierarchy / permissions): {e}", ephemeral=True)
 
-# --- INTERACTIVE TOOLBAR VIEW (With Dynamic Share Button Removal) ---
+# --- INTERACTIVE TOOLBAR VIEW ---
 class XompilerToolbarView(View):
     def __init__(self, response_text: str, plot_bytes: bytes = None, clean_code: str = "", author_name: str = "User", is_flagged: bool = False):
         super().__init__(timeout=None)
@@ -194,16 +194,12 @@ class XompilerToolbarView(View):
         self.author_name = author_name
         self.is_flagged = is_flagged
 
-        # Only add the Share Publicly button if content is NOT flagged
-        if not self.is_flagged:
-            self.add_item(self.share_button)
-        
-        self.add_item(self.fix_ai_button)
-        self.add_item(self.download_button)
-        self.add_item(self.rerun_button)
-        self.add_item(self.format_button)
+        # Safely remove the share button if flagged
+        if self.is_flagged:
+            self.remove_item(self.share_button)
 
-    async def share_button_callback(self, interaction: discord.Interaction, button: Button):
+    @discord.ui.button(label="🌍 Share Publicly", style=discord.ButtonStyle.green, row=0, custom_id="xompiler_share")
+    async def share_button(self, interaction: discord.Interaction, button: Button):
         try:
             button.disabled = True
             button.label = "Shared ✅"
@@ -217,8 +213,6 @@ class XompilerToolbarView(View):
         except Exception as e:
             await interaction.followup.send(f"❌ Error sharing: {e}", ephemeral=True)
 
-    share_button = Button(label="🌍 Share Publicly", style=discord.ButtonStyle.green, row=0, custom_id="xompiler_share")
-    
     @discord.ui.button(label="🤖 Fix with AI", style=discord.ButtonStyle.blurple, row=0, custom_id="xompiler_fix_ai")
     async def fix_ai_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
@@ -248,9 +242,9 @@ class XompilerToolbarView(View):
             await msg.edit(content="✨ **AI Fixed Code Generated! Re-running fixed version...**")
             await execute_and_render_code(interaction, fixed_code, {}, "", existing_msg=msg)
 
-        except Exception as e:
+        except Exception:
             try:
-                await interaction.followup.send(f"❌ AI Fix Error: {e}", ephemeral=True)
+                await interaction.followup.send("❌ AI Fix Error occurred.", ephemeral=True)
             except Exception:
                 pass
 
@@ -268,11 +262,8 @@ class XompilerToolbarView(View):
         try:
             msg = await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True)
             await execute_and_render_code(interaction, self.clean_code, {}, "", existing_msg=msg)
-        except Exception as e:
-            try:
-                await interaction.followup.send(f"❌ Re-run error: {e}", ephemeral=True)
-            except Exception:
-                pass
+        except Exception:
+            pass
 
     @discord.ui.button(label="🧹 Format Code", style=discord.ButtonStyle.secondary, row=1, custom_id="xompiler_format")
     async def format_button(self, interaction: discord.Interaction, button: Button):
@@ -284,9 +275,6 @@ class XompilerToolbarView(View):
             await interaction.response.send_message(formatted_box, ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ Formatting error: {e}", ephemeral=True)
-
-# Bind callback to share button dynamically
-XompilerToolbarView.share_button.callback = XompilerToolbarView.share_button_callback
 
 # --- PRIVATE AUDIT LOG HELPER ---
 async def send_execution_log(bot_instance, guild, user, code_text, stdin_text, result_text, exec_time):
@@ -306,7 +294,6 @@ async def send_execution_log(bot_instance, guild, user, code_text, stdin_text, r
                 print(f"⚠️ Could not fetch LOG_CHANNEL_ID: {ch_err}")
                 return safety_tag
 
-        # Resolve member object for moderation action buttons
         member = user
         if guild and not isinstance(user, discord.Member):
             member = guild.get_member(user.id)
@@ -505,14 +492,22 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
 
     response_text = f"📊 **Execution Output ({exec_time:.4f}s):**\n```ansi\n{result}\n```"
     
-    # Pass is_flagged to strip away the Share Publicly button if prohibited content was detected
-    toolbar_view = XompilerToolbarView(response_text, plot_data, main_code, interaction.user.name, is_flagged=is_flagged)
+    # Wrap view creation and msg edit in a try-except so the user ALWAYS gets an update
+    try:
+        toolbar_view = XompilerToolbarView(response_text, plot_data, main_code, interaction.user.name, is_flagged=is_flagged)
 
-    if plot_data:
-        file_obj = discord.File(io.BytesIO(plot_data), filename="xompiler_plot.png")
-        await msg.edit(content=response_text, attachments=[file_obj], view=toolbar_view)
-    else:
-        await msg.edit(content=response_text, view=toolbar_view)
+        if plot_data:
+            file_obj = discord.File(io.BytesIO(plot_data), filename="xompiler_plot.png")
+            await msg.edit(content=response_text, attachments=[file_obj], view=toolbar_view)
+        else:
+            await msg.edit(content=response_text, view=toolbar_view)
+    except Exception as edit_err:
+        print(f"⚠️ UI Edit failed: {edit_err}")
+        # Fallback to plain text if the complex view fails
+        try:
+            await msg.edit(content=response_text)
+        except Exception as fallback_err:
+            print(f"⚠️ Fallback edit failed: {fallback_err}")
 
 # --- INTERACTIVE MULTI-LINE CODEBOX MODAL ---
 class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
