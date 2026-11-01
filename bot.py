@@ -22,7 +22,7 @@ E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
-LOG_CHANNEL_ID = 1566318931864715395  # Replace with your copied Discord Channel ID integer
+LOG_CHANNEL_ID = 000000000000000000  # Replace with your copied Discord Channel ID integer
 
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
@@ -96,7 +96,7 @@ def ask_gemini(prompt_text: str) -> str:
             
     return f"AI Error: Unable to generate response. Details: {str(last_error)}"
 
-# --- CONTENT SAFETY CLASSIFIER ---
+# --- STRICT CONTENT SAFETY CLASSIFIER ---
 def classify_content_safety(text_content: str) -> str:
     if not ai_client:
         return "[SAFE]"
@@ -104,9 +104,11 @@ def classify_content_safety(text_content: str) -> str:
         response = ai_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=(
-                "Analyze the following code/output for safety violations. "
-                "Classify it strictly into one of these categories: [SAFE], [ABUSE/HARASSMENT], [VIOLENCE/THREAT], [SEXUAL/NSFW]. "
-                "Return ONLY the category tag in brackets.\n\n"
+                "You are a strict content moderation AI for a secure code compiler. "
+                "Analyze the following code or execution output for safety violations, profanity, explicit words, sexual content, abuse, or threats. "
+                "If the content contains ANY sexual terms (like 'sex', explicit anatomy, etc.), profanity, hate speech, or abusive language, you MUST flag it as [SEXUAL/NSFW] or [ABUSE/HARASSMENT]. "
+                "Only classify as [SAFE] if it is entirely clean code with zero profanity or sexual references. "
+                "Return ONLY the category tag in brackets, chosen from: [SAFE], [ABUSE/HARASSMENT], [VIOLENCE/THREAT], [SEXUAL/NSFW].\n\n"
                 f"Content:\n{text_content[:1000]}"
             )
         )
@@ -382,7 +384,7 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
 
     result, exec_time, plot_data = await asyncio.to_thread(run_sandbox)
 
-    # 🚀 SEND DATA TO PRIVATE LOGS CHANNEL WITH SAFETY CLASSIFICATION
+    # 🚀 SEND DATA TO PRIVATE LOGS CHANNEL WITH STRICT SAFETY CLASSIFICATION
     await send_execution_log(
         bot_instance=interaction.client,
         guild=interaction.guild,
