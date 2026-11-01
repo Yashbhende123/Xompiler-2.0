@@ -22,7 +22,7 @@ E2B_API_KEY = os.getenv("E2B_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- CONFIGURE YOUR PRIVATE LOG CHANNEL ID HERE ---
-LOG_CHANNEL_ID = 000000000000000000  # Replace with your copied Discord Channel ID integer
+LOG_CHANNEL_ID = 1566318931864715395 # Replace with your copied Discord Channel ID integer
 
 # --- 1. KEEP-ALIVE WEB SERVER FOR RENDER ---
 app = Flask(__name__)
