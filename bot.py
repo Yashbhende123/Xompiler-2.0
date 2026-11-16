@@ -77,12 +77,13 @@ def save_snippets_to_disk(data):
     except Exception as e:
         print(f"Error saving snippets: {e}")
 
-# --- ROBUST GEMINI CALLER (UPDATED FOR DYNAMIC PERSONAS) ---
+# --- ROBUST GEMINI CALLER (UPDATED FOR DYNAMIC PERSONAS & VALID MODELS) ---
 def ask_gemini(prompt_text: str, system_prompt: str = None) -> str:
     if not ai_client:
         return "AI features are currently unavailable (Missing API Key or Client Init Error)."
     
-    models_to_try = ["gemini-2.5-flash", "gemini-flash-latest"]
+    # Updated to valid Gemini 1.5 model names to fix 404 NOT_FOUND error
+    models_to_try = ["gemini-1.5-flash", "gemini-1.5-pro"]
     last_error = None
     
     for model_name in models_to_try:
@@ -124,7 +125,7 @@ def classify_content_safety(text_content: str) -> str:
     
     try:
         response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-1.5-flash",
             contents=(
                 "You are an extremely strict content moderation filter for a code compiler log. "
                 "Scan the text below for ANY inappropriate words, profanity, vulgarity, sexual terms, hate speech, or abuse. "
