@@ -15,6 +15,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from e2b_code_interpreter import Sandbox
 from google import genai
+from google.genai import types
 
 # Load local .env if present (Render will use its own Environment Variables)
 load_dotenv()
@@ -76,8 +77,8 @@ def save_snippets_to_disk(data):
     except Exception as e:
         print(f"Error saving snippets: {e}")
 
-# --- ROBUST GEMINI CALLER ---
-def ask_gemini(prompt_text: str) -> str:
+# --- ROBUST GEMINI CALLER (UPDATED FOR DYNAMIC PERSONAS) ---
+def ask_gemini(prompt_text: str, system_prompt: str = None) -> str:
     if not ai_client:
         return "AI features are currently unavailable (Missing API Key or Client Init Error)."
     
@@ -86,10 +87,14 @@ def ask_gemini(prompt_text: str) -> str:
     
     for model_name in models_to_try:
         try:
-            response = ai_client.models.generate_content(
-                model=model_name,
-                contents=prompt_text
-            )
+            kwargs = {
+                "model": model_name,
+                "contents": prompt_text
+            }
+            if system_prompt:
+                kwargs["config"] = types.GenerateContentConfig(system_instruction=system_prompt)
+                
+            response = ai_client.models.generate_content(**kwargs)
             if response and response.text:
                 return response.text
         except Exception as e:
@@ -194,7 +199,6 @@ class XompilerToolbarView(View):
         self.author_name = author_name
         self.is_flagged = is_flagged
 
-        # Safely remove the share button if flagged
         if self.is_flagged:
             self.remove_item(self.share_button)
 
@@ -217,20 +221,21 @@ class XompilerToolbarView(View):
     async def fix_ai_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            # FIX: wait=True ensures msg is successfully returned and can be edited later
             msg = await interaction.followup.send("🤖 Xompiler AI is analyzing your error and debugging the code...", ephemeral=True, wait=True)
 
             prompt = (
-                "You are an expert Python debugging assistant.\n"
                 "The following Python code produced an error or failed execution:\n"
                 f"```python\n{self.clean_code}\n```\n\n"
                 f"Execution Output / Error:\n```\n{self.response_text}\n```\n\n"
                 "Fix the bug or error in the code. Return ONLY the corrected Python code inside a clean markdown code block (```python ... ```) without any conversational explanation."
             )
-
-            ai_response = await asyncio.to_thread(lambda: ask_gemini(prompt))
             
-            # FIX: Graceful handling if Gemini blocks the fix due to flagged profanity content
+            # Using strict persona here to prevent Hsin's chat persona from leaking into bug fixes
+            ai_response = await asyncio.to_thread(lambda: ask_gemini(
+                prompt,
+                system_prompt="You are a strict Python compiler and debugging assistant. Output only raw code."
+            ))
+            
             if "AI Error:" in ai_response:
                 fixed_code = "print('⚠️ Xompiler AI Error: Could not generate a fix (likely blocked by safety filters due to flagged terms).')"
             else:
@@ -264,7 +269,6 @@ class XompilerToolbarView(View):
     async def rerun_button(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            # FIX: wait=True ensures msg is properly instantiated
             msg = await interaction.followup.send("🔄 Re-running your code snippet...", ephemeral=True, wait=True)
             await execute_and_render_code(interaction, self.clean_code, {}, "", existing_msg=msg)
         except Exception:
@@ -290,7 +294,6 @@ async def send_execution_log(bot_instance, guild, user, code_text, stdin_text, r
         return safety_tag
         
     try:
-        # Cache first, fallback to fetch_channel
         channel = bot_instance.get_channel(LOG_CHANNEL_ID)
         if not channel:
             try:
@@ -438,7 +441,6 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
     if existing_msg:
         msg = existing_msg
     else:
-        # FIX: wait=True added
         msg = await interaction.followup.send(f"⏱️ Executing code privately for **{interaction.user.name}**...", ephemeral=True, wait=True)
 
     def run_sandbox():
@@ -480,7 +482,6 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
 
     result, exec_time, plot_data = await asyncio.to_thread(run_sandbox)
 
-    # Dispatch to private audit log channel and retrieve content safety tag
     safety_tag = await send_execution_log(
         bot_instance=interaction.client,
         guild=interaction.guild,
@@ -499,7 +500,6 @@ async def execute_and_render_code(interaction: discord.Interaction, raw_code: st
     response_text = f"📊 **Execution Output ({exec_time:.4f}s):**\n```ansi\n{result}\n```"
     toolbar_view = XompilerToolbarView(response_text, plot_data, main_code, interaction.user.name, is_flagged=is_flagged)
 
-    # FIX: Bulletproof edit handling
     try:
         if hasattr(msg, 'edit'):
             if plot_data:
@@ -532,14 +532,13 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
     stdin_input = TextInput(
         label="Stdin / Program Inputs (Optional)",
         style=discord.TextStyle.short,
-        placeholder="e.g. yash 21",
+        placeholder="e.g. input 21",
         required=False,
         max_length=200
     )
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        # FIX: wait=True ensures msg is properly instantiated
         msg = await interaction.followup.send("⏱️ Initializing secure sandbox and executing...", ephemeral=True, wait=True)
 
         code_text = self.code_input.value.strip()
@@ -552,7 +551,28 @@ class CodeBoxModal(Modal, title="Xompiler AI - Secure Codebox"):
 
         await execute_and_render_code(interaction, code_text, {}, self.stdin_input.value or "", existing_msg=msg)
 
-# --- 3. SLASH COMMANDS (/run, /profile, /codebox) ---
+# --- 3. SLASH COMMANDS (/chat, /run, /profile, /codebox) ---
+@bot.tree.command(name="chat", description="Converse with Hsin, the Moon Fox")
+@discord.app_commands.describe(message="What would you like to say to Hsin?")
+async def chat_command(interaction: discord.Interaction, message: str):
+    await interaction.response.defer()
+    
+    hsin_persona = (
+        "You are Hsin, the elegant and mysterious Moon Fox from the world of Wuthering Waves. "
+        "You wield the Blooming Jadehaven and speak with grace, tranquility, and ethereal charm. "
+        "Use subtle lunar, starlight, or nature metaphors in your speech. "
+        "You are helpful but maintain a gentle, slightly playful fox-like mystique. "
+        "Address the user warmly as 'Rover'. "
+        "Keep your responses conversational, concise, and formatted beautifully for Discord using markdown."
+    )
+    
+    try:
+        reply = await asyncio.to_thread(lambda: ask_gemini(message, system_prompt=hsin_persona))
+        chat_log = f"🦊 **Rover:** {message}\n\n🌙 **Hsin:** {reply[:1900]}"
+        await interaction.followup.send(chat_log)
+    except Exception as e:
+        await interaction.followup.send(f"❌ The connection to the moon was lost: {e}")
+
 @bot.tree.command(name="run", description="Execute code quickly")
 @discord.app_commands.describe(code="Your Python code to execute")
 async def run_slash(interaction: discord.Interaction, code: str):
@@ -570,7 +590,7 @@ async def run_slash(interaction: discord.Interaction, code: str):
 @discord.app_commands.describe(
     code="Your Python source code",
     file="Optional source file (.py or .txt)",
-    stdin="Program inputs (e.g. yash 21)"
+    stdin="Program inputs"
 )
 async def profile(
     interaction: discord.Interaction, 
